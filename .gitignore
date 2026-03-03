@@ -10,10 +10,33 @@ backend-nodejs/.env
 # SwiftPM
 .build/
 
-# Kotlin/Gradle
+# Kotlin/Gradle / KMP / Android
 .gradle/
 **/build/
 **/.kotlin/
+*.iml
+rtls-kmp/build/
+rtls-android-app/build/
+rtls-android-app/app/build/
+
+# Flutter / Dart
+.dart_tool/
+*.apk
+*.aab
+rtls_flutter/example/build/
+rtls_flutter/example/.dart_tool/
+rtls_flutter/example/android/.gradle/
+rtls_flutter/example/ios/Pods/
+rtls_flutter/example/ios/.symlinks/
+rtls_flutter/example/ios/Flutter/Flutter.framework
+rtls_flutter/example/ios/Flutter/Flutter.podspec
+
+# React Native / example app
+rtls-react-native/node_modules/
+rtls-mobile-example/node_modules/
+rtls-mobile-example/ios/Pods/
+rtls-mobile-example/ios/build/
+rtls-mobile-example/ios/*.xcworkspace/xcuserdata/
 
 # IDE
 .idea/

@@ -97,6 +97,32 @@ swift test
 | `Tests/RTLSCoreTests` | Unit tests for core logic |
 | `backend-nodejs/` | Node.js API (REST + WebSocket, PostgreSQL) |
 | `rtls-dashboard/` | React dashboard (Vite, TypeScript, Leaflet) |
+| `rtls-react-native/` | React Native native module (iOS) wrapping RTLSyncKit |
+| `rtls-mobile-example/` | Example React Native app using the module |
+| `rtls-kmp/` | KMP shared module (Android-only): sync contract, SQLite, location, HTTP |
+| `rtls-android-app/` | Native Android app using the KMP module |
+| `rtls_flutter/` | Flutter plugin: Android uses KMP, iOS uses RTLSyncKit |
+
+---
+
+## Flutter, KMP, and Native Android
+
+The repo includes a **KMP (Kotlin Multiplatform) shared module** (Android-only), a **Native Android app** that uses it, and a **Flutter plugin** that uses platform channels — on Android it calls into the KMP sync module; on iOS it calls into the Swift RTLSyncKit. All use the same backend (REST + WebSocket).
+
+- **KMP module** (`rtls-kmp/`): Shared Kotlin implementing the same sync contract as RTLSyncKit (models, store, API client, sync engine). See [rtls-kmp/README.md](rtls-kmp/README.md) for build and usage.
+- **Native Android app** (`rtls-android-app/`): Kotlin app with config screen (base URL, userId, deviceId, token), Start/Stop tracking, Flush, and pending-count display. See [rtls-android-app/README.md](rtls-android-app/README.md) for how to build and run.
+- **Flutter plugin** (`rtls_flutter/`): Dart API (configure, startTracking, stopTracking, getStats, flushNow, event stream). On Android the plugin depends on the KMP module; on iOS it uses RTLSyncKit. See [rtls_flutter/README.md](rtls_flutter/README.md) for integration. The example app is at `rtls_flutter/example/`: run `flutter run` from the example directory. **Android:** The example’s `android/settings.gradle.kts` includes the KMP project so the plugin can resolve it. **iOS:** Add the RTLSyncKit Swift package in Xcode (File → Add Package Dependencies → path to this repo root) and add the **RTLSyncKit** library to the Runner target, same as for rtls-mobile-example.
+
+---
+
+## React Native (iOS)
+
+React Native apps can use the same offline-first sync engine on iOS via the **rtls-react-native** native module, which wraps RTLSyncKit.
+
+- **Add the package:** `npm install file:../rtls-react-native` (or from this repo root).
+- **iOS:** Run `pod install` in your app's `ios/` folder. Then add the **RTLSyncKit** Swift package in Xcode (File → Add Package Dependencies → path to this repo root) and add the **RTLSyncKit** library to your app target. See `rtls-react-native/README.md` for the full API (configure, startTracking, stopTracking, getStats, events).
+- **Example app:** `rtls-mobile-example/` is a minimal RN app that uses the module. After `cd rtls-mobile-example && npm install && cd ios && pod install`, run `ruby scripts/add_rtls_swift_package.rb` so the Pods project links RTLSyncKit, then build from Xcode or `npx react-native run-ios`.
+- **Android:** Not implemented yet (planned: Kotlin or JS implementation using the same backend API).
 
 ---
 
