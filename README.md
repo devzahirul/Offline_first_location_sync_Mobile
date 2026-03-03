@@ -1,6 +1,6 @@
 # Real-Time Location Sync (RTLS)
 
-**Production-grade offline-first location tracking** — multi-platform clients, shared sync contract, and a single backend. Built to demonstrate scalable architecture, background sync, and clean separation of concerns across iOS (Swift), Android (Kotlin Multiplatform), Flutter, and React Native.
+**Production-grade offline-first location tracking** — multi-platform clients, shared sync contract, and a single backend. Demonstrates scalable architecture, background sync, and clean separation of concerns across **iOS (Swift)**, **Android (Kotlin Multiplatform)**, **Flutter**, and **React Native**.
 
 ---
 
@@ -13,7 +13,7 @@ This repository implements an **offline-first** location sync system: clients re
 - **Single backend contract** — All clients (native iOS, native Android, Flutter, React Native) consume the same REST and WebSocket API; no client-specific endpoints.
 - **Shared sync semantics** — Swift (RTLSyncKit) and Kotlin (rtls-kmp) implement the same logical contract: models, store interface, batch upload, retry, and event stream.
 - **Layered architecture** — Core types and policies are decoupled from persistence and platform; sync engine is testable without device or network.
-- **Cross-platform coverage** — iOS (SwiftPM), Android (KMP), Flutter (platform channels), React Native (native module); backend and dashboard are framework-agnostic.
+- **Cross-platform coverage** — Native iOS (SwiftPM), native Android (KMP), Flutter (Android + iOS), React Native (Android + iOS); backend and dashboard are framework-agnostic.
 
 ---
 
@@ -31,10 +31,10 @@ This repository implements an **offline-first** location sync system: clients re
          │                                            │                                            │
          ▼                                            ▼                                            ▼
 ┌─────────────────┐                        ┌─────────────────┐                        ┌─────────────────┐
-│   iOS (Swift)    │                        │ Android (KMP)   │                        │  Web dashboard  │
-│ RTLSyncKit      │                        │ rtls-kmp       │                        │  React + Vite   │
-│ CoreLocation    │                        │ FusedLocation   │                        │  WebSocket sub  │
-│ BGProcessingTask│                        │ SQLite + OkHttp │                        │  Leaflet map    │
+│   iOS (Swift)   │                        │ Android (KMP)    │                        │  Web dashboard   │
+│ RTLSyncKit      │                        │ rtls-kmp         │                        │  React + Vite    │
+│ CoreLocation    │                        │ FusedLocation    │                        │  WebSocket sub   │
+│ BGProcessingTask│                        │ SQLite + OkHttp   │                        │  Leaflet map     │
 └────────┬────────┘                        └────────┬────────┘                        └─────────────────┘
          │                                            │
          │  RTLSyncKit (SwiftPM)                       │  rtls-kmp (Gradle)
@@ -43,17 +43,18 @@ This repository implements an **offline-first** location sync system: clients re
          ▼                                            ▼
 ┌─────────────────┐                        ┌─────────────────┐
 │ Flutter (iOS)   │                        │ Flutter (Android)│
-│ RtlsFlutterPlugin│                       │ RtlsFlutterPlugin│
 │ → RTLSyncKit    │                        │ → rtls-kmp      │
-└─────────────────┘                        └─────────────────┘
+└────────┬────────┘                        └────────┬────────┘
          │                                            │
          └────────────────────┬───────────────────────┘
-                              ▼
-                    ┌─────────────────┐
-                    │ React Native     │
-                    │ rtls-react-native│
-                    │ (iOS: RTLSyncKit)│
-                    └─────────────────┘
+                               │
+         ┌────────────────────┴─────────────────────┐
+         ▼                                            ▼
+┌─────────────────┐                        ┌─────────────────┐
+│ React Native    │                        │ React Native    │
+│ (iOS)           │                        │ (Android)       │
+│ → RTLSyncKit    │                        │ → rtls-kmp      │
+└─────────────────┘                        └─────────────────┘
 ```
 
 - **Backend:** Stateless HTTP + stateful WebSocket; optional PostgreSQL for persistence; JWT for auth.
@@ -67,9 +68,9 @@ This repository implements an **offline-first** location sync system: clients re
 | Layer | Technologies | Notes |
 |-------|--------------|--------|
 | **iOS (native)** | Swift 5.9, SwiftPM, CoreLocation, BackgroundTasks, Combine | Multi-target package: Core, Data, Sync, Platform, SyncKit |
-| **Android (native)** | Kotlin 1.9, KMP (android target), SQLite, OkHttp, FusedLocationProvider | commonMain + androidMain; consumed by app and Flutter |
-| **Flutter** | Dart 3, MethodChannel / EventChannel | Android → KMP; iOS → RTLSyncKit |
-| **React Native** | JavaScript/TypeScript, native iOS module | iOS only; wraps RTLSyncKit |
+| **Android (native)** | Kotlin 1.9, KMP (android target), SQLite, OkHttp, FusedLocationProvider | commonMain + androidMain; consumed by native app, Flutter, and React Native on Android |
+| **Flutter** | Dart 3, MethodChannel / EventChannel | Android → rtls-kmp; iOS → RTLSyncKit |
+| **React Native** | JavaScript/TypeScript, native modules (Swift + Kotlin) | iOS → RTLSyncKit; Android → rtls-kmp; same JS API both platforms |
 | **Backend** | Node.js, Express, TypeScript, Zod, ws, pg, jsonwebtoken | REST + WebSocket; optional PostgreSQL |
 | **Dashboard** | React 19, TypeScript, Vite, Leaflet | WebSocket client; no server-side rendering |
 
@@ -90,8 +91,8 @@ This repository implements an **offline-first** location sync system: clients re
 | `rtls-dashboard/` | React dashboard; see [rtls-dashboard/README.md](rtls-dashboard/README.md) |
 | `rtls-kmp/` | KMP shared module (Android); see [rtls-kmp/README.md](rtls-kmp/README.md) |
 | `rtls-android-app/` | Native Android app; see [rtls-android-app/README.md](rtls-android-app/README.md) |
-| `rtls_flutter/` | Flutter plugin; see [rtls_flutter/README.md](rtls_flutter/README.md) |
-| `rtls-react-native/` | React Native native module (iOS); see [rtls-react-native/README.md](rtls-react-native/README.md) |
+| `rtls_flutter/` | Flutter plugin (iOS + Android); see [rtls_flutter/README.md](rtls_flutter/README.md) |
+| `rtls-react-native/` | React Native native module (iOS + Android); see [rtls-react-native/README.md](rtls-react-native/README.md) |
 | `rtls-mobile-example/` | Example React Native app; see [rtls-mobile-example/README.md](rtls-mobile-example/README.md) |
 
 ---
@@ -104,7 +105,7 @@ This repository implements an **offline-first** location sync system: clients re
 - **iOS:** Xcode (iOS 15+)
 - **Android:** Android Studio or CLI; SDK 21+
 - **Flutter:** Flutter SDK (stable)
-- **React Native:** Node.js, Xcode, CocoaPods
+- **React Native:** Node.js; Xcode + CocoaPods (iOS); Android SDK (Android)
 
 ### 1. Backend
 
@@ -131,8 +132,8 @@ Open the app and subscribe to the WebSocket to view live locations.
 
 - **iOS app:** Open `RealTimeLocationUpdateBackground/RealTimeLocationUpdateBackground.xcodeproj`, set base URL (e.g. `http://<your-ip>:3000`), run on device/simulator.
 - **Android app:** `cd rtls-android-app && ./gradlew installDebug`; configure base URL, user/device/token, then Start tracking.
-- **Flutter example:** `cd rtls_flutter/example && flutter run`; see [rtls_flutter/README.md](rtls_flutter/README.md) for host app integration.
-- **React Native example:** See [rtls-mobile-example/README.md](rtls-mobile-example/README.md) for install and Swift package linking.
+- **Flutter example:** `cd rtls_flutter/example && flutter run`; see [rtls_flutter/README.md](rtls_flutter/README.md) for host app integration (Android: include rtls-kmp; iOS: link RTLSyncKit in Xcode).
+- **React Native example:** See [rtls-mobile-example/README.md](rtls-mobile-example/README.md) for install; iOS: link RTLSyncKit in Xcode; Android: include rtls-kmp in `settings.gradle`.
 
 ### 4. Run Swift tests
 
@@ -152,21 +153,21 @@ All mobile clients use the same contract:
 | `GET` | `/v1/locations/latest?userId=` | Latest stored point for a user (JWT required) |
 | WebSocket | `/v1/ws` | Subscribe; server broadcasts `{ type: "location", point }` on new data |
 
-Batch payload: `{ schemaVersion, points: [ { id, userId, deviceId, recordedAt (ms), lat, lng, ... } ] }`. Response: `{ acceptedIds, rejected, serverTime }`. See backend README for schemas and validation.
+Batch payload: `{ schemaVersion, points: [ { id, userId, deviceId, recordedAt (ms), lat, lng, ... } ] }`. Response: `{ acceptedIds, rejected, serverTime }`. See [backend-nodejs/README.md](backend-nodejs/README.md) for schemas and validation.
 
 ---
 
 ## Flutter, KMP, and Native Android
 
-- **rtls-kmp:** Kotlin Multiplatform module (Android target only). Implements the same logical sync contract as RTLSyncKit: models, `LocationStore`, `LocationSyncAPI`, sync engine, `LocationSyncClient`. Consumed by the native Android app and by the Flutter plugin on Android. [rtls-kmp/README.md](rtls-kmp/README.md)
+- **rtls-kmp:** Kotlin Multiplatform module (Android target only). Implements the same logical sync contract as RTLSyncKit: models, `LocationStore`, `LocationSyncAPI`, sync engine, `LocationSyncClient`. Consumed by the native Android app, the Flutter plugin on Android, and the React Native module on Android. [rtls-kmp/README.md](rtls-kmp/README.md)
 - **rtls-android-app:** Standalone Kotlin/Android app: config screen (base URL, userId, deviceId, token), Start/Stop, Flush, pending count and last event. [rtls-android-app/README.md](rtls-android-app/README.md)
-- **rtls_flutter:** Flutter plugin; Dart API (configure, startTracking, stopTracking, getStats, flushNow, event stream). Android uses KMP; iOS uses RTLSyncKit. Host app must include KMP in Gradle (Android) and link RTLSyncKit in Xcode (iOS). [rtls_flutter/README.md](rtls_flutter/README.md)
+- **rtls_flutter:** Flutter plugin; Dart API (configure, startTracking, stopTracking, getStats, flushNow, event stream). **Android** uses rtls-kmp; **iOS** uses RTLSyncKit. Host app must include rtls-kmp in Gradle (Android) and link RTLSyncKit in Xcode (iOS). [rtls_flutter/README.md](rtls_flutter/README.md)
 
 ---
 
-## React Native (iOS)
+## React Native (iOS and Android)
 
-The **rtls-react-native** package exposes RTLSyncKit to JavaScript: configure, start/stop tracking, getStats, flushNow, and event listeners (RECORDED, SYNC_EVENT, ERROR, etc.). iOS only; the app must link the RTLSyncKit Swift package in Xcode. [rtls-react-native/README.md](rtls-react-native/README.md). Example: [rtls-mobile-example/README.md](rtls-mobile-example/README.md).
+The **rtls-react-native** package exposes the same JavaScript API on both platforms: configure, start/stop tracking, getStats, flushNow, and event listeners (RECORDED, SYNC_EVENT, ERROR, etc.). **iOS:** native module wraps RTLSyncKit; app must link the RTLSyncKit Swift package in Xcode. **Android:** native module wraps rtls-kmp; app must include the rtls-kmp project in `settings.gradle` and declare location permissions. [rtls-react-native/README.md](rtls-react-native/README.md). Example: [rtls-mobile-example/README.md](rtls-mobile-example/README.md).
 
 ---
 
