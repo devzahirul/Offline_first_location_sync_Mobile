@@ -1,6 +1,6 @@
 # RTLS Native Android App
 
-Standalone **Android application** for offline-first location sync. Uses the shared [rtls-kmp](https://github.com/devzahirul/Offline_first_location_sync_iOS/tree/main/rtls-kmp) module for persistence, batching, and upload; provides a minimal UI to configure the backend, start/stop tracking, flush pending data, and display sync status.
+Standalone **Android application** for offline-first location sync. When you build only this app, only this project and its dependency (rtls-kmp) are built. The rest of the repo (Swift package, React Native, Flutter, backend, dashboard) is not used by Gradle. Uses the shared [rtls-kmp](https://github.com/devzahirul/Offline_first_location_sync_iOS/tree/main/rtls-kmp) module for persistence, batching, and upload; provides a minimal UI to configure the backend, start/stop tracking, flush pending data, and display sync status.
 
 ---
 

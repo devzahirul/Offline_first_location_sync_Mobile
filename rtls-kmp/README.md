@@ -1,6 +1,8 @@
 # rtls-kmp
 
-**Kotlin Multiplatform (KMP) shared module** for offline-first location sync on Android. Implements the same logical contract as the Swift [RTLSyncKit](https://github.com/devzahirul/Offline_first_location_sync_iOS): local persistence, batch upload, sync engine with configurable batching and retry, and an event stream for UI feedback.
+**Kotlin Multiplatform (KMP) shared module** for offline-first location sync on Android.
+
+When you depend only on this module (e.g. `implementation project(':rtls_kmp')`), only this module’s code is built and linked. The rest of the repo (Swift package, React Native, Flutter, backend) is not loaded by Gradle. Implements the same logical contract as the Swift [RTLSyncKit](https://github.com/devzahirul/Offline_first_location_sync_iOS): local persistence, batch upload, sync engine with configurable batching and retry, and an event stream for UI feedback.
 
 Consumed by the **native Android app** (`rtls-android-app`) and by the **Flutter plugin** (`rtls_flutter`) on Android. All clients use the same backend API: `POST /v1/locations/batch`, `GET /v1/locations/latest`, and optional WebSocket `/v1/ws`.
 

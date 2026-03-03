@@ -14,4 +14,6 @@ Pod::Spec.new do |s|
   s.requires_arc = true
   s.dependency 'React-Core'
   # Host app must add the RTLSyncKit Swift package in Xcode (File > Add Package Dependencies).
+  # Optional: set SWIFT_ACTIVE_COMPILATION_CONDITIONS = 'RTLS_LITE' to build without the Swift
+  # package (stub only; smaller binary). See README "Optional: lite build (iOS)".
 end

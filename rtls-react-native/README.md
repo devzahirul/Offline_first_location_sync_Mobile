@@ -11,6 +11,8 @@
 - **Backend:** Same API on both: `POST /v1/locations/batch`, `GET /v1/locations/latest?userId=`, WebSocket `/v1/ws`. JWT in `Authorization` where required.
 - **API surface:** Configure (base URL, userId, deviceId, access token), requestAlwaysAuthorization, startTracking, stopTracking, getStats, flushNow, and event listeners (RECORDED, SYNC_EVENT, ERROR, AUTHORIZATION_CHANGED, TRACKING_STARTED, TRACKING_STOPPED).
 
+When you add only this npm package, only this package’s code (ios/, android/, src/) is used. On iOS you add the Swift package (RTLSyncKit) separately in Xcode; on Android you include the rtls-kmp Gradle project. The rest of the repo (Flutter, native Android app, backend, dashboard) is not part of this package.
+
 ---
 
 ## Installation
@@ -66,6 +68,34 @@ npx react-native run-ios
 ```
 
 Or build from Xcode.
+
+### iOS: what gets loaded?
+
+When you add the Swift package, **the full RTLSyncKit library is linked** and loaded at app launch (same as any other linked framework). You can’t load “only part” of it at runtime.
+
+**Runtime behavior is already optimized:** no SQLite, CoreLocation, or network work runs until you call `configure()` and then `startTracking()`. The client and sync engine are created lazily. So adding the package does not slow down launch or use memory for sync until the feature is used.
+
+### Optional: lite build (iOS)
+
+If your app has a **variant that never uses location sync** (e.g. a “lite” build), you can **omit the Swift package** to reduce binary size and avoid loading its code at all:
+
+1. **Do not** add the RTLSyncKit Swift package in Xcode for that target.
+2. In your **Podfile**, after `pod install`, set the compilation condition so the native module uses the stub:
+
+   ```ruby
+   post_install do |installer|
+     installer.pods_project.targets.each do |t|
+       if t.name == 'rtls-react-native'
+         t.build_configurations.each do |config|
+           config.build_settings['SWIFT_ACTIVE_COMPILATION_CONDITIONS'] ||= ['$(inherited)']
+           config.build_settings['SWIFT_ACTIVE_COMPILATION_CONDITIONS'] << 'RTLS_LITE'
+         end
+       end
+     end
+   end
+   ```
+
+3. Re-run `pod install` and build. The module will compile without importing RTLSyncKit; all methods will reject with “RTLSyncKit not linked”. Use this only for builds where you do not use location sync.
 
 ---
 

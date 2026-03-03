@@ -1,4 +1,9 @@
 // swift-tools-version: 5.9
+//
+// When this repo is added as a Swift package (Git URL), only this file and the
+// targets below (Sources/RTLSCore, RTLSData, RTLSSync, RTLSyncKit, RTLSPlatformiOS)
+// are built and linked. The rest of the repo (Android, React Native, Flutter,
+// backend, dashboard) is not used by Swift Package Manager.
 
 import PackageDescription
 

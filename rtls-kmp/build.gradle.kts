@@ -1,3 +1,6 @@
+// When you include only this project (rtls-kmp) in Gradle, only this module's source
+// (commonMain + androidMain) is built. The rest of the repo (Swift package, React Native,
+// Flutter, backend, dashboard) is not used by the build.
 plugins {
     kotlin("multiplatform")
     id("com.android.library")

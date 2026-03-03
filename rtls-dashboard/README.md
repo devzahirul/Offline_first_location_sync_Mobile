@@ -1,6 +1,6 @@
 # RTLS Dashboard
 
-Web dashboard for **Real-Time Location Sync**: live map of location points streamed from the backend over WebSocket, with optional REST fallback for latest positions.
+Web dashboard for **Real-Time Location Sync**. When you run only this app (`npm run dev` in this folder), only this directory’s code is used. The rest of the repo (Swift package, Android, React Native, Flutter, backend) is not loaded. live map of location points streamed from the backend over WebSocket, with optional REST fallback for latest positions.
 
 ---
 

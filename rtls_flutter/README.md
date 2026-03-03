@@ -11,6 +11,8 @@
 - **iOS:** Plugin’s native code imports RTLSyncKit. The **host app** must add the RTLSyncKit Swift package in Xcode and link it to the app target.
 - **Channels:** MethodChannel for one-shot calls (configure, startTracking, stopTracking, getStats, flushNow, requestAlwaysAuthorization); EventChannel for the continuous event stream.
 
+When you add only this Flutter plugin, only this plugin’s code (lib/, android/, ios/) is used. On iOS you add the RTLSyncKit Swift package separately in Xcode; on Android you include the rtls-kmp Gradle project. The rest of the repo (React Native, native Android app, backend, dashboard) is not part of the plugin.
+
 ---
 
 ## Adding the plugin to your app

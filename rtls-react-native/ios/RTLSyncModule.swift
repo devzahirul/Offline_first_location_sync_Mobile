@@ -1,9 +1,17 @@
 // React Native native module bridging to RTLSyncKit (iOS).
 // The host app must add the Swift package (this repo's Package.swift) in Xcode.
+//
+// Optimization: RTLSyncKit is only used after configure() and startTracking().
+// No SQLite, CoreLocation, or network work runs at app launch — the package is
+// linked but all heavy work is lazy. To omit the Swift package entirely (smaller
+// binary), set RTLS_LITE=1 in SWIFT_ACTIVE_COMPILATION_CONDITIONS — see README.
 
 import Foundation
 import React
+
+#if !RTLS_LITE
 import RTLSyncKit
+#endif
 
 private let eventRecorded = "rtls_recorded"
 private let eventSyncEvent = "rtls_syncEvent"
@@ -12,6 +20,7 @@ private let eventAuthorizationChanged = "rtls_authorizationChanged"
 private let eventTrackingStarted = "rtls_trackingStarted"
 private let eventTrackingStopped = "rtls_trackingStopped"
 
+#if !RTLS_LITE
 private func locationPointToDict(_ point: LocationPoint) -> [String: Any] {
     var dict: [String: Any] = [
         "id": point.id.uuidString,
@@ -200,3 +209,34 @@ class RTLSyncModule: RCTEventEmitter {
         }
     }
 }
+
+#else
+// Stub implementation when RTLS_LITE=1: Swift package not linked; smaller binary.
+@objc(RTLSyncModule)
+class RTLSyncModule: RCTEventEmitter {
+    override init() { super.init() }
+    override static func requiresMainQueueSetup() -> Bool { false }
+    override func supportedEvents() -> [String]! {
+        [eventRecorded, eventSyncEvent, eventError, eventAuthorizationChanged, eventTrackingStarted, eventTrackingStopped]
+    }
+    private static let notLinked = "RTLSyncKit not linked. Add the Swift package in Xcode for location sync, or remove RTLS_LITE for full build."
+    @objc func configure(_ config: NSDictionary, resolve: @escaping RCTPromiseResolveBlock, reject: @escaping RCTPromiseRejectBlock) {
+        reject("RTLSync", RTLSyncModule.notLinked, nil)
+    }
+    @objc func startTracking(_ resolve: @escaping RCTPromiseResolveBlock, reject: @escaping RCTPromiseRejectBlock) {
+        reject("RTLSync", RTLSyncModule.notLinked, nil)
+    }
+    @objc func stopTracking(_ resolve: @escaping RCTPromiseResolveBlock, reject: @escaping RCTPromiseRejectBlock) {
+        reject("RTLSync", RTLSyncModule.notLinked, nil)
+    }
+    @objc func requestAlwaysAuthorization(_ resolve: @escaping RCTPromiseResolveBlock, reject: @escaping RCTPromiseRejectBlock) {
+        reject("RTLSync", RTLSyncModule.notLinked, nil)
+    }
+    @objc func getStats(_ resolve: @escaping RCTPromiseResolveBlock, reject: @escaping RCTPromiseRejectBlock) {
+        reject("RTLSync", RTLSyncModule.notLinked, nil)
+    }
+    @objc func flushNow(_ resolve: @escaping RCTPromiseResolveBlock, reject: @escaping RCTPromiseRejectBlock) {
+        reject("RTLSync", RTLSyncModule.notLinked, nil)
+    }
+}
+#endif

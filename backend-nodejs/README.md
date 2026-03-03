@@ -1,6 +1,6 @@
 # RTLS Backend (Node.js)
 
-REST and WebSocket API for **Real-Time Location Sync**. Single service: batch upload of location points, latest-point query, and live stream over WebSocket. Used by all clients (iOS, Android, Flutter, React Native) under a single contract.
+REST and WebSocket API for **Real-Time Location Sync**. When you run only this service (`npm run dev` in this folder), only this directory’s code is used. The rest of the repo (Swift package, Android, React Native, Flutter, dashboard) is not loaded by Node. Single service: batch upload of location points, latest-point query, and live stream over WebSocket. Used by all clients (iOS, Android, Flutter, React Native) under a single contract.
 
 ---
 
