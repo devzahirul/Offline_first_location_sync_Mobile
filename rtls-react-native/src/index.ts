@@ -1,6 +1,6 @@
 /**
- * rtls-react-native: React Native bridge to RTLSyncKit (iOS).
- * Requires the host app to link the Swift package in Xcode.
+ * rtls-react-native: React Native bridge for offline-first location sync.
+ * iOS: uses RTLSyncKit (Swift). Android: uses rtls-kmp (Kotlin). Same JS API both platforms.
  */
 
 import { NativeModules, NativeEventEmitter, Platform } from 'react-native';
@@ -59,14 +59,15 @@ export const RTLSyncEvents = {
 } as const;
 
 const eventEmitter =
-  Platform.OS === 'ios' && RTLSyncModule
-    ? new NativeEventEmitter(RTLSyncModule)
-    : null;
+  RTLSyncModule != null ? new NativeEventEmitter(RTLSyncModule) : null;
 
 function requireNativeModule(): typeof RTLSyncModule {
   if (!RTLSyncModule) {
     throw new Error(
-      'rtls-react-native: Native module RTLSyncModule is not available. On iOS, link the Swift package (RTLSyncKit) in Xcode.'
+      'rtls-react-native: Native module RTLSyncModule is not available. ' +
+        (Platform.OS === 'ios'
+          ? 'On iOS, link the Swift package (RTLSyncKit) in Xcode.'
+          : 'On Android, include the rtls-kmp project in settings.gradle and add location permissions.')
     );
   }
   return RTLSyncModule;
@@ -120,7 +121,7 @@ export function flushNow(): Promise<void> {
 
 /**
  * Subscribe to sync events. Returns a subscription with .remove().
- * Only available on iOS when the native module is linked.
+ * Works on iOS (RTLSyncKit) and Android (rtls-kmp) when the native module is linked.
  */
 export function addEventListener(
   event: keyof typeof RTLSyncEvents,

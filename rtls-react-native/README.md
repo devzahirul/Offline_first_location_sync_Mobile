@@ -1,13 +1,14 @@
 # rtls-react-native
 
-**React Native native module** for offline-first location sync on **iOS**. Exposes the existing [RTLSyncKit](https://github.com/devzahirul/Offline_first_location_sync_iOS) Swift engine to JavaScript so RN apps can record location locally and sync when online, with the same backend contract as the native iOS and Android clients.
+**React Native native module** for offline-first location sync on **iOS and Android**. On iOS it uses the [RTLSyncKit](https://github.com/devzahirul/Offline_first_location_sync_iOS) Swift engine; on Android it uses the shared [rtls-kmp](../rtls-kmp/README.md) Kotlin module. Same JavaScript API on both platforms; same backend contract.
 
 ---
 
 ## Overview
 
-- **Platform:** iOS only. The native module is implemented in Swift and wraps RTLSyncKit. Android is not implemented (planned: Kotlin or JS fallback using the same backend API).
-- **Backend:** Same API as the rest of the system: `POST /v1/locations/batch`, `GET /v1/locations/latest?userId=`, WebSocket `/v1/ws`. JWT in `Authorization` header where required.
+- **iOS:** Native module (Swift) wrapping RTLSyncKit. Requires linking the Swift package in Xcode.
+- **Android:** Native module (Kotlin) wrapping **rtls-kmp** (same sync engine as the native Android app and Flutter on Android). Requires including the `rtls-kmp` project in the app’s Gradle build and location permissions.
+- **Backend:** Same API on both: `POST /v1/locations/batch`, `GET /v1/locations/latest?userId=`, WebSocket `/v1/ws`. JWT in `Authorization` where required.
 - **API surface:** Configure (base URL, userId, deviceId, access token), requestAlwaysAuthorization, startTracking, stopTracking, getStats, flushNow, and event listeners (RECORDED, SYNC_EVENT, ERROR, AUTHORIZATION_CHANGED, TRACKING_STARTED, TRACKING_STOPPED).
 
 ---
@@ -65,6 +66,52 @@ npx react-native run-ios
 ```
 
 Or build from Xcode.
+
+---
+
+## Android setup
+
+### 1. Include the rtls-kmp project
+
+The Android native code **depends on the rtls-kmp module**. Your app’s Android build must include it.
+
+In your app’s **`android/settings.gradle`** (or `settings.gradle.kts`), add (adjust the path so it points to the **rtls-kmp** folder in your repo):
+
+**Groovy:**
+
+```groovy
+include ':app'
+include ':rtls_kmp'
+project(':rtls_kmp').projectDir = file('<path-to-rtls-kmp>')
+```
+
+**Kotlin DSL:**
+
+```kotlin
+include(":app")
+include(":rtls_kmp")
+project(":rtls_kmp").projectDir = file("<path-to-rtls-kmp>")
+```
+
+Example: if your repo layout is `myrepo/rtls-kmp` and `myrepo/MyApp/android/`, then from `MyApp/android/` use `file("../../rtls-kmp")`.
+
+### 2. Location permissions
+
+In **`android/app/src/main/AndroidManifest.xml`**:
+
+```xml
+<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+<uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+<uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
+```
+
+Request these at runtime before calling `startTracking()` (e.g. with `react-native-permissions` or similar).
+
+### 3. Rebuild
+
+```bash
+npx react-native run-android
+```
 
 ---
 
@@ -140,13 +187,7 @@ See the repo’s [backend-nodejs/README.md](../backend-nodejs/README.md) and roo
 
 ## Example app
 
-The repository includes a minimal React Native app that uses this module and links RTLSyncKit: [rtls-mobile-example/README.md](../rtls-mobile-example/README.md). Use it as a reference for install order, `pod install`, and the script that adds the Swift package to the Pods project.
-
----
-
-## Android
-
-Not implemented. Planned: Kotlin (reusing rtls-kmp) or a JS-side implementation that calls the same REST/WebSocket API.
+The repository includes a minimal React Native app that uses this module: [rtls-mobile-example/README.md](../rtls-mobile-example/README.md). Use it for install order, iOS (Swift package + `pod install`), and Android (include `rtls_kmp` in `settings.gradle`).
 
 ---
 
