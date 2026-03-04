@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 /// Application theme for RTLS Flutter Example.
 /// Material 3 with a distinct, professional color scheme.
+/// Supports light and dark; follows system by default.
 class AppTheme {
   AppTheme._();
 
@@ -12,6 +13,20 @@ class AppTheme {
       primary: const Color(0xFF1565C0),
       secondary: const Color(0xFF00897B),
     );
+    return _themeFrom(colorScheme);
+  }
+
+  static ThemeData get dark {
+    final colorScheme = ColorScheme.fromSeed(
+      seedColor: const Color(0xFF42A5F5),
+      brightness: Brightness.dark,
+      primary: const Color(0xFF42A5F5),
+      secondary: const Color(0xFF26A69A),
+    );
+    return _themeFrom(colorScheme);
+  }
+
+  static ThemeData _themeFrom(ColorScheme colorScheme) {
     return ThemeData(
       useMaterial3: true,
       colorScheme: colorScheme,

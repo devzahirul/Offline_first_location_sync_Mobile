@@ -8,6 +8,18 @@ import '../constants/app_constants.dart';
 import 'live_map_placeholder_screen.dart';
 import 'pending_locations_screen.dart';
 
+/// Semantic keys for testing and accessibility.
+abstract class HomeScreenSemantics {
+  static const String applySettingsButton = 'home_apply_settings';
+  static const String startStopTrackingTile = 'home_start_stop_tracking';
+  static const String flushNowTile = 'home_flush_now';
+  static const String refreshStatsTile = 'home_refresh_stats';
+  static const String trackingStatus = 'home_tracking_status';
+  static const String authorizationStatus = 'home_authorization_status';
+  static const String pendingQueueValue = 'home_pending_queue';
+  static const String eventLogSection = 'home_event_log';
+}
+
 /// Single screen matching iOS RTLS Demo: Status, Backend, Actions, Logs.
 /// Works on both Android and iOS.
 class HomeScreen extends StatefulWidget {
@@ -39,8 +51,8 @@ class _HomeScreenState extends State<HomeScreen> {
   final List<String> _logs = [];
   StreamSubscription<Map<dynamic, dynamic>>? _eventSub;
 
-  // Status (iOS parity): plugin does not expose auth status
-  static const String _authorizationStatus = '—';
+  // Authorization status from plugin events (iOS sends it; Android may not)
+  String _authorizationStatus = '—';
 
   // Tracking policy (stored locally; plugin uses its own defaults)
   bool _useSignificantLocationOnly = false;
@@ -216,6 +228,12 @@ class _HomeScreenState extends State<HomeScreen> {
       } else if (type == 'error') {
         _errorMessage = e['message']?.toString() ?? 'Error';
         _log('Error: $_errorMessage');
+      } else if (type == 'authorizationChanged') {
+        final auth = e['authorization']?.toString();
+        if (auth != null && auth.isNotEmpty) {
+          _authorizationStatus = auth;
+          _log('Auth: $_authorizationStatus');
+        }
       }
     });
     _loadStats();
@@ -280,6 +298,10 @@ class _HomeScreenState extends State<HomeScreen> {
     if (baseUrl.isEmpty || userId.isEmpty || deviceId.isEmpty || token.isEmpty) {
       _showSnack('Please fill Base URL, User ID, Device ID, and Token');
       return;
+    }
+    if (_isTracking) {
+      await _stopTracking();
+      if (!mounted) return;
     }
     // Use current field values for batch params (in case user edited without onChanged)
     final flushSec = double.tryParse(_flushIntervalController.text.trim()) ?? _flushIntervalSeconds;
@@ -382,42 +404,6 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  Future<void> _toggleTrackingLegacy() async {
-    setState(() => _isLoading = true);
-    _setError(null);
-    try {
-      if (_isTracking) {
-        await RTLSync.stopTracking();
-        _persistWasTracking(false);
-        if (!mounted) return;
-        setState(() {
-          _isTracking = false;
-          _isLoading = false;
-        });
-        _showSnack('Tracking stopped');
-      } else {
-        await RTLSync.startTracking();
-        _persistWasTracking(true);
-        if (!mounted) return;
-        setState(() {
-          _isTracking = true;
-          _isLoading = false;
-        });
-        _showSnack('Tracking started');
-      }
-      await _loadStats();
-    } catch (e) {
-      if (!mounted) return;
-      setState(() => _isLoading = false);
-      _setError(e.toString());
-      final msg = e.toString().contains('LOCATION_PERMISSION_DENIED')
-          ? 'Grant location first: tap "Always" above, then Start Tracking.'
-          : 'Failed: $e';
-      _showSnack(msg);
-      _log('Start failed: $e');
-    }
-  }
-
   Future<void> _flushNow() async {
     setState(() => _isLoading = true);
     try {
@@ -471,9 +457,20 @@ class _HomeScreenState extends State<HomeScreen> {
             _sectionCard(
               theme,
               [
-                _keyValueRow(theme, 'Authorization', _authorizationStatus),
+                Semantics(
+                  label: 'Authorization status',
+                  value: _authorizationStatus,
+                  container: true,
+                  child: _keyValueRow(theme, 'Authorization', _authorizationStatus),
+                ),
                 _divider(theme),
-                _keyValueRow(theme, 'Tracking', _isTracking ? 'Running' : 'Stopped'),
+                Semantics(
+                  key: const Key(HomeScreenSemantics.trackingStatus),
+                  label: 'Tracking status',
+                  value: _isTracking ? 'Running' : 'Stopped',
+                  container: true,
+                  child: _keyValueRow(theme, 'Tracking', _isTracking ? 'Running' : 'Stopped'),
+                ),
                 if (_isTracking && _useSignificantLocationOnly)
                   Padding(
                     padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
@@ -485,7 +482,13 @@ class _HomeScreenState extends State<HomeScreen> {
                 _divider(theme),
                 _keyValueRow(theme, 'Last Sync', _lastSyncMessage),
                 _divider(theme),
-                _keyValueRow(theme, 'Pending Queue', _configured ? '$_pendingCount' : '…'),
+                Semantics(
+                  key: const Key(HomeScreenSemantics.pendingQueueValue),
+                  label: 'Pending queue count',
+                  value: _configured ? '$_pendingCount' : 'Not configured',
+                  container: true,
+                  child: _keyValueRow(theme, 'Pending Queue', _configured ? '$_pendingCount' : '…'),
+                ),
                 if (_oldestPendingAt != null) ...[_divider(theme), _keyValueRow(theme, 'Oldest Pending', _oldestPendingAt!)],
                 if (_lastRecordedText != null) ...[_divider(theme), _keyValueRow(theme, 'Last Recorded', _lastRecordedText!)],
                 if (_errorMessage != null && _errorMessage!.isNotEmpty) ...[
@@ -505,8 +508,10 @@ class _HomeScreenState extends State<HomeScreen> {
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
               child: TextField(
                 controller: _baseUrlController,
-                decoration: const InputDecoration(labelText: 'Base URL (http/https)'),
-                enabled: !_configured,
+                decoration: const InputDecoration(
+                  labelText: 'Base URL',
+                  hintText: 'http://192.168.0.102:3000',
+                ),
                 keyboardType: TextInputType.url,
               ),
             ),
@@ -516,7 +521,6 @@ class _HomeScreenState extends State<HomeScreen> {
                 controller: _tokenController,
                 decoration: const InputDecoration(labelText: 'Access Token (optional)'),
                 obscureText: true,
-                enabled: !_configured,
               ),
             ),
             Padding(
@@ -524,7 +528,6 @@ class _HomeScreenState extends State<HomeScreen> {
               child: TextField(
                 controller: _userIdController,
                 decoration: const InputDecoration(labelText: 'User ID'),
-                enabled: !_configured,
               ),
             ),
             Padding(
@@ -532,14 +535,18 @@ class _HomeScreenState extends State<HomeScreen> {
               child: TextField(
                 controller: _deviceIdController,
                 decoration: const InputDecoration(labelText: 'Device ID'),
-                enabled: !_configured,
               ),
             ),
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
-              child: FilledButton(
-                onPressed: _configured || _isLoading ? null : _configure,
-                child: Text(_configured ? 'Applied' : 'Apply Settings (Rebuild Client)'),
+              child: Semantics(
+                key: const Key(HomeScreenSemantics.applySettingsButton),
+                label: 'Apply settings and rebuild sync client',
+                button: true,
+                child: FilledButton(
+                  onPressed: _isLoading ? null : _configure,
+                  child: const Text('Apply Settings'),
+                ),
               ),
             ),
             ],
@@ -653,19 +660,36 @@ class _HomeScreenState extends State<HomeScreen> {
               subtitle: Text('Request background location', style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
               onTap: _isLoading ? null : _requestPermission,
             ),
-            ListTile(
-              title: Text(_isTracking ? 'Stop Tracking' : 'Start Tracking'),
-              trailing: _isTracking ? Icon(Icons.stop_circle, color: theme.colorScheme.error) : Icon(Icons.play_circle, color: theme.colorScheme.primary),
-              onTap: _configured && !_isLoading ? _toggleTracking : null,
+            Semantics(
+              key: const Key(HomeScreenSemantics.startStopTrackingTile),
+              label: _isTracking ? 'Stop tracking' : 'Start tracking',
+              button: true,
+              enabled: _configured && !_isLoading,
+              child: ListTile(
+                title: Text(_isTracking ? 'Stop Tracking' : 'Start Tracking'),
+                trailing: _isTracking ? Icon(Icons.stop_circle, color: theme.colorScheme.error) : Icon(Icons.play_circle, color: theme.colorScheme.primary),
+                onTap: _configured && !_isLoading ? _toggleTracking : null,
+              ),
             ),
-            ListTile(
-              title: const Text('Flush Now'),
-              subtitle: Text('Upload pending points immediately', style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
-              onTap: _configured && !_isLoading ? _flushNow : null,
+            Semantics(
+              key: const Key(HomeScreenSemantics.flushNowTile),
+              label: 'Flush now. Upload pending points immediately.',
+              button: true,
+              enabled: _configured && !_isLoading,
+              child: ListTile(
+                title: const Text('Flush Now'),
+                subtitle: Text('Upload pending points immediately', style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
+                onTap: _configured && !_isLoading ? _flushNow : null,
+              ),
             ),
-            ListTile(
-              title: const Text('Refresh Stats'),
-              onTap: _loadStats,
+            Semantics(
+              key: const Key(HomeScreenSemantics.refreshStatsTile),
+              label: 'Refresh stats',
+              button: true,
+              child: ListTile(
+                title: const Text('Refresh Stats'),
+                onTap: _loadStats,
+              ),
             ),
             ],
             ),
@@ -720,21 +744,26 @@ class _HomeScreenState extends State<HomeScreen> {
               ],
             ),
             _sectionHeader(theme, 'Logs'),
-            _sectionCard(
-              theme,
-              [
-            if (_logs.isEmpty)
-              Padding(
-                padding: const EdgeInsets.all(16),
-                child: Text('No logs yet.', style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
-              )
-            else
-              ..._logs.take(50).map((line) => SelectableText(
-                line,
-                style: theme.textTheme.bodySmall,
-                maxLines: 3,
-              ).padding(const EdgeInsets.symmetric(horizontal: 16, vertical: 4))),
-              ],
+            Semantics(
+              key: const Key(HomeScreenSemantics.eventLogSection),
+              label: 'Event log',
+              container: true,
+              child: _sectionCard(
+                theme,
+                [
+                  if (_logs.isEmpty)
+                    Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Text('No logs yet.', style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
+                    )
+                  else
+                    ..._logs.take(50).map((line) => SelectableText(
+                      line,
+                      style: theme.textTheme.bodySmall,
+                      maxLines: 3,
+                    ).padding(const EdgeInsets.symmetric(horizontal: 16, vertical: 4))),
+                ],
+              ),
             ),
           ],
         ),

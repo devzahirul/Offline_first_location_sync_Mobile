@@ -2,7 +2,7 @@ import Foundation
 import RTLSCore
 import SQLite3
 
-public actor SQLiteLocationStore: LocationStore, SentPointsPrunableLocationStore {
+public actor SQLiteLocationStore: LocationStore, SentPointsPrunableLocationStore, BidirectionalLocationStore {
     private nonisolated let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
     private enum SyncStatus: Int {
@@ -52,6 +52,31 @@ public actor SQLiteLocationStore: LocationStore, SentPointsPrunableLocationStore
 
             try setSchemaVersion(1)
         }
+        if current < 2 {
+            try db.exec("""
+            CREATE TABLE IF NOT EXISTS sync_replica_location_points (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                device_id TEXT NOT NULL,
+                recorded_at_ms INTEGER NOT NULL,
+                lat REAL NOT NULL,
+                lng REAL NOT NULL,
+                hacc REAL,
+                vacc REAL,
+                altitude REAL,
+                speed REAL,
+                course REAL,
+                updated_at_ms INTEGER NOT NULL
+            );
+            """)
+            try db.exec("""
+            CREATE TABLE IF NOT EXISTS sync_metadata (
+                key TEXT PRIMARY KEY,
+                value BLOB
+            );
+            """)
+            try setSchemaVersion(2)
+        }
     }
 
     private func currentSchemaVersion() throws -> Int {
@@ -70,10 +95,10 @@ public actor SQLiteLocationStore: LocationStore, SentPointsPrunableLocationStore
         defer { sqlite3_finalize(stmt) }
 
         guard sqlite3_bind_int(stmt, 1, Int32(version)) == SQLITE_OK else {
-            throw SQLiteError.bind(SQLiteDatabase.lastErrorMessage(from: nil))
+            throw SQLiteError.bind(db.lastErrorMessage())
         }
         guard sqlite3_step(stmt) == SQLITE_DONE else {
-            throw SQLiteError.step(SQLiteDatabase.lastErrorMessage(from: nil))
+            throw SQLiteError.step(db.lastErrorMessage())
         }
     }
 
@@ -110,7 +135,7 @@ public actor SQLiteLocationStore: LocationStore, SentPointsPrunableLocationStore
                 try bindInt(stmt, index: 12, value: SyncStatus.pending.rawValue)
 
                 guard sqlite3_step(stmt) == SQLITE_DONE else {
-                    throw SQLiteError.step(SQLiteDatabase.lastErrorMessage(from: nil))
+                    throw SQLiteError.step(db.lastErrorMessage())
                 }
             }
 
@@ -236,6 +261,127 @@ public actor SQLiteLocationStore: LocationStore, SentPointsPrunableLocationStore
         try mark(pointIds: pointIds, status: .failed, sentAt: nil, errorMessage: errorMessage)
     }
 
+    // MARK: - BidirectionalLocationStore
+
+    public func applyServerChanges(
+        _ items: [LocationPoint],
+        mergeStrategy: (any LocationMergeStrategy)?,
+        serverTime: Date? = nil,
+        lastSyncAt: Date? = nil
+    ) async throws {
+        guard !items.isEmpty else { return }
+        let context = MergeContext(lastSyncAt: lastSyncAt, serverTime: serverTime)
+        try db.exec("BEGIN TRANSACTION;")
+        do {
+            for serverItem in items {
+                let local = try fetchLocalPoint(id: serverItem.id)
+                if let local {
+                    if local == serverItem { continue }
+                    if let strategy = mergeStrategy {
+                        switch strategy.resolve(local: local, server: serverItem, context: context) {
+                        case .keepLocal: continue
+                        case .keepServer: try upsertReplica(serverItem)
+                        case .use(let resolved): try upsertReplica(resolved)
+                        }
+                    } else {
+                        try upsertReplica(serverItem)
+                    }
+                } else {
+                    try upsertReplica(serverItem)
+                }
+            }
+            try db.exec("COMMIT;")
+        } catch {
+            try? db.exec("ROLLBACK;")
+            throw error
+        }
+    }
+
+    public func getLastPullCursor() async throws -> SyncCursor? {
+        let sql = "SELECT value FROM sync_metadata WHERE key = 'pull_cursor' LIMIT 1;"
+        let stmt = try db.prepare(sql)
+        defer { sqlite3_finalize(stmt) }
+        guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
+        guard let blob = sqlite3_column_blob(stmt, 0) else { return nil }
+        let count = sqlite3_column_bytes(stmt, 0)
+        return SyncCursor(value: Data(bytes: blob, count: Int(count)))
+    }
+
+    public func setLastPullCursor(_ cursor: SyncCursor?) async throws {
+        let sql = "INSERT OR REPLACE INTO sync_metadata(key, value) VALUES ('pull_cursor', ?);"
+        let stmt = try db.prepare(sql)
+        defer { sqlite3_finalize(stmt) }
+        if let cursor {
+            let bytes = [UInt8](cursor.value)
+            guard sqlite3_bind_blob(stmt, 1, bytes, Int32(bytes.count), SQLITE_TRANSIENT) == SQLITE_OK else {
+                throw SQLiteError.bind(db.lastErrorMessage())
+            }
+        } else {
+            guard sqlite3_bind_null(stmt, 1) == SQLITE_OK else {
+                throw SQLiteError.bind(db.lastErrorMessage())
+            }
+        }
+        guard sqlite3_step(stmt) == SQLITE_DONE else {
+            throw SQLiteError.step(db.lastErrorMessage())
+        }
+    }
+
+    private func fetchLocalPoint(id: UUID) throws -> LocationPoint? {
+        if let replica = try fetchReplicaPoint(id: id) { return replica }
+        return try fetchPendingPoint(id: id)
+    }
+
+    private func fetchReplicaPoint(id: UUID) throws -> LocationPoint? {
+        let sql = """
+        SELECT id, user_id, device_id, recorded_at_ms, lat, lng, hacc, vacc, altitude, speed, course
+        FROM sync_replica_location_points WHERE id = ?;
+        """
+        let stmt = try db.prepare(sql)
+        defer { sqlite3_finalize(stmt) }
+        try bindText(stmt, index: 1, value: id.uuidString)
+        guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
+        return decodePointRow(stmt)
+    }
+
+    private func fetchPendingPoint(id: UUID) throws -> LocationPoint? {
+        let sql = """
+        SELECT id, user_id, device_id, recorded_at_ms, lat, lng, hacc, vacc, altitude, speed, course
+        FROM location_points WHERE id = ? AND sync_status = ?;
+        """
+        let stmt = try db.prepare(sql)
+        defer { sqlite3_finalize(stmt) }
+        try bindText(stmt, index: 1, value: id.uuidString)
+        try bindInt(stmt, index: 2, value: SyncStatus.pending.rawValue)
+        guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
+        return decodePointRow(stmt)
+    }
+
+    private func upsertReplica(_ point: LocationPoint) throws {
+        let sql = """
+        INSERT OR REPLACE INTO sync_replica_location_points(
+            id, user_id, device_id, recorded_at_ms, lat, lng, hacc, vacc, altitude, speed, course, updated_at_ms
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+        """
+        let stmt = try db.prepare(sql)
+        defer { sqlite3_finalize(stmt) }
+        let nowMs = Self.dateToMs(Date())
+        try bindText(stmt, index: 1, value: point.id.uuidString)
+        try bindText(stmt, index: 2, value: point.userId)
+        try bindText(stmt, index: 3, value: point.deviceId)
+        try bindInt64(stmt, index: 4, value: Self.dateToMs(point.recordedAt))
+        try bindDouble(stmt, index: 5, value: point.coordinate.latitude)
+        try bindDouble(stmt, index: 6, value: point.coordinate.longitude)
+        try bindNullableDouble(stmt, index: 7, value: point.horizontalAccuracy)
+        try bindNullableDouble(stmt, index: 8, value: point.verticalAccuracy)
+        try bindNullableDouble(stmt, index: 9, value: point.altitude)
+        try bindNullableDouble(stmt, index: 10, value: point.speed)
+        try bindNullableDouble(stmt, index: 11, value: point.course)
+        try bindInt64(stmt, index: 12, value: nowMs)
+        guard sqlite3_step(stmt) == SQLITE_DONE else {
+            throw SQLiteError.step(db.lastErrorMessage())
+        }
+    }
+
     public func pruneSentPoints(olderThan cutoff: Date) async throws {
         let sql = """
         DELETE FROM location_points
@@ -250,7 +396,7 @@ public actor SQLiteLocationStore: LocationStore, SentPointsPrunableLocationStore
         try bindInt64(stmt, index: 2, value: Self.dateToMs(cutoff))
 
         guard sqlite3_step(stmt) == SQLITE_DONE else {
-            throw SQLiteError.step(SQLiteDatabase.lastErrorMessage(from: nil))
+            throw SQLiteError.step(db.lastErrorMessage())
         }
     }
 
@@ -278,7 +424,7 @@ public actor SQLiteLocationStore: LocationStore, SentPointsPrunableLocationStore
                 try bindText(stmt, index: 4, value: id.uuidString)
 
                 guard sqlite3_step(stmt) == SQLITE_DONE else {
-                    throw SQLiteError.step(SQLiteDatabase.lastErrorMessage(from: nil))
+                    throw SQLiteError.step(db.lastErrorMessage())
                 }
             }
 
@@ -321,13 +467,13 @@ public actor SQLiteLocationStore: LocationStore, SentPointsPrunableLocationStore
 
     private func bindText(_ stmt: OpaquePointer?, index: Int32, value: String) throws {
         let result = sqlite3_bind_text(stmt, index, value, -1, SQLITE_TRANSIENT)
-        guard result == SQLITE_OK else { throw SQLiteError.bind(SQLiteDatabase.lastErrorMessage(from: nil)) }
+        guard result == SQLITE_OK else { throw SQLiteError.bind(db.lastErrorMessage()) }
     }
 
     private func bindNullableText(_ stmt: OpaquePointer?, index: Int32, value: String?) throws {
         guard let value else {
             let result = sqlite3_bind_null(stmt, index)
-            guard result == SQLITE_OK else { throw SQLiteError.bind(SQLiteDatabase.lastErrorMessage(from: nil)) }
+            guard result == SQLITE_OK else { throw SQLiteError.bind(db.lastErrorMessage()) }
             return
         }
         try bindText(stmt, index: index, value: value)
@@ -335,18 +481,18 @@ public actor SQLiteLocationStore: LocationStore, SentPointsPrunableLocationStore
 
     private func bindInt(_ stmt: OpaquePointer?, index: Int32, value: Int) throws {
         let result = sqlite3_bind_int(stmt, index, Int32(value))
-        guard result == SQLITE_OK else { throw SQLiteError.bind(SQLiteDatabase.lastErrorMessage(from: nil)) }
+        guard result == SQLITE_OK else { throw SQLiteError.bind(db.lastErrorMessage()) }
     }
 
     private func bindInt64(_ stmt: OpaquePointer?, index: Int32, value: Int64) throws {
         let result = sqlite3_bind_int64(stmt, index, value)
-        guard result == SQLITE_OK else { throw SQLiteError.bind(SQLiteDatabase.lastErrorMessage(from: nil)) }
+        guard result == SQLITE_OK else { throw SQLiteError.bind(db.lastErrorMessage()) }
     }
 
     private func bindNullableInt64(_ stmt: OpaquePointer?, index: Int32, value: Int64?) throws {
         guard let value else {
             let result = sqlite3_bind_null(stmt, index)
-            guard result == SQLITE_OK else { throw SQLiteError.bind(SQLiteDatabase.lastErrorMessage(from: nil)) }
+            guard result == SQLITE_OK else { throw SQLiteError.bind(db.lastErrorMessage()) }
             return
         }
         try bindInt64(stmt, index: index, value: value)
@@ -354,13 +500,13 @@ public actor SQLiteLocationStore: LocationStore, SentPointsPrunableLocationStore
 
     private func bindDouble(_ stmt: OpaquePointer?, index: Int32, value: Double) throws {
         let result = sqlite3_bind_double(stmt, index, value)
-        guard result == SQLITE_OK else { throw SQLiteError.bind(SQLiteDatabase.lastErrorMessage(from: nil)) }
+        guard result == SQLITE_OK else { throw SQLiteError.bind(db.lastErrorMessage()) }
     }
 
     private func bindNullableDouble(_ stmt: OpaquePointer?, index: Int32, value: Double?) throws {
         guard let value else {
             let result = sqlite3_bind_null(stmt, index)
-            guard result == SQLITE_OK else { throw SQLiteError.bind(SQLiteDatabase.lastErrorMessage(from: nil)) }
+            guard result == SQLITE_OK else { throw SQLiteError.bind(db.lastErrorMessage()) }
             return
         }
         try bindDouble(stmt, index: index, value: value)

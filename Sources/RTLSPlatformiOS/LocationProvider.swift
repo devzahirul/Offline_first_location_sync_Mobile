@@ -182,18 +182,19 @@ extension LocationProvider: @preconcurrency CLLocationManagerDelegate {
     }
 
     public func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
-        guard let loc = locations.last else { return }
+        guard !locations.isEmpty else { return }
 
-        let sample = RawLocationSample(
-            recordedAt: loc.timestamp,
-            coordinate: GeoCoordinate(latitude: loc.coordinate.latitude, longitude: loc.coordinate.longitude),
-            horizontalAccuracy: loc.horizontalAccuracy >= 0 ? loc.horizontalAccuracy : nil,
-            verticalAccuracy: loc.verticalAccuracy >= 0 ? loc.verticalAccuracy : nil,
-            altitude: loc.altitude,
-            speed: loc.speed >= 0 ? loc.speed : nil,
-            course: loc.course >= 0 ? loc.course : nil
-        )
-
-        continuation.yield(.didUpdate(sample))
+        for loc in locations {
+            let sample = RawLocationSample(
+                recordedAt: loc.timestamp,
+                coordinate: GeoCoordinate(latitude: loc.coordinate.latitude, longitude: loc.coordinate.longitude),
+                horizontalAccuracy: loc.horizontalAccuracy >= 0 ? loc.horizontalAccuracy : nil,
+                verticalAccuracy: loc.verticalAccuracy >= 0 ? loc.verticalAccuracy : nil,
+                altitude: loc.altitude,
+                speed: loc.speed >= 0 ? loc.speed : nil,
+                course: loc.course >= 0 ? loc.course : nil
+            )
+            continuation.yield(.didUpdate(sample))
+        }
     }
 }

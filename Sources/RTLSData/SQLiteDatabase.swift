@@ -60,5 +60,9 @@ final class SQLiteDatabase {
         guard let c = sqlite3_errmsg(db) else { return "Unknown sqlite error" }
         return String(cString: c)
     }
+
+    func lastErrorMessage() -> String {
+        Self.lastErrorMessage(from: db)
+    }
 }
 

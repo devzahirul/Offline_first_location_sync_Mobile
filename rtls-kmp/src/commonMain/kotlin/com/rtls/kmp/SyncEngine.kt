@@ -15,6 +15,8 @@ import kotlinx.coroutines.sync.withLock
 sealed class SyncEngineEvent {
     data class UploadSuccess(val accepted: Int, val rejected: Int) : SyncEngineEvent()
     data class UploadFailed(val message: String) : SyncEngineEvent()
+    data class PullSuccess(val count: Int) : SyncEngineEvent()
+    data class PullFailed(val message: String) : SyncEngineEvent()
 }
 
 /**
@@ -30,18 +32,26 @@ class SyncEngine(
     private val retryPolicy: SyncRetryPolicy,
     private val retentionPolicy: RetentionPolicy,
     private val networkMonitor: NetworkMonitor?,
-    private val scope: CoroutineScope
+    private val scope: CoroutineScope,
+    private val pullAPI: LocationPullAPI? = null,
+    private val mergeStrategy: LocationMergeStrategy? = null,
+    private val pullIntervalSeconds: Long? = null,
+    private val pullOnForeground: Boolean = true
 ) {
     private val _events = MutableSharedFlow<SyncEngineEvent>(extraBufferCapacity = 64)
     val events: SharedFlow<SyncEngineEvent> = _events.asSharedFlow()
 
+    private val bidirectionalStore: BidirectionalLocationStore? = store as? BidirectionalLocationStore
+
     private var timerJob: Job? = null
     private var networkJob: Job? = null
+    private var pullJob: Job? = null
     private var running = false
     private val flushMutex = Mutex()
     private var failureCount = 0
     private var nextAllowedFlushAtMs: Long? = null
     private var lastPruneAtMs: Long? = null
+    private var lastPullAtMs: Long? = null
 
     fun start() {
         if (running) return
@@ -64,6 +74,16 @@ class SyncEngine(
                 }
             }
         }
+
+        if (pullAPI != null && bidirectionalStore != null) {
+            val intervalMs = (pullIntervalSeconds ?: 60L).coerceAtLeast(1L) * 1000
+            pullJob = scope.launch {
+                while (isActive && running) {
+                    delay(intervalMs)
+                    if (running) runPullOnce()
+                }
+            }
+        }
     }
 
     fun stop() {
@@ -72,6 +92,8 @@ class SyncEngine(
         timerJob = null
         networkJob?.cancel()
         networkJob = null
+        pullJob?.cancel()
+        pullJob = null
     }
 
     fun notifyNewData() {
@@ -80,6 +102,38 @@ class SyncEngine(
 
     suspend fun flushNow(maxBatches: Int? = null) {
         flushIfNeeded(force = true, maxBatches = maxBatches)
+    }
+
+    /**
+     * Run one pull cycle (fetch from server, apply to local). No-op if pull or bidirectional store not configured.
+     */
+    suspend fun pullNow() {
+        if (pullAPI == null || bidirectionalStore == null) return
+        runPullOnce()
+    }
+
+    private suspend fun runPullOnce() {
+        val api = pullAPI ?: return
+        val bidir = bidirectionalStore ?: return
+        try {
+            val cursor = bidir.getLastPullCursor()
+            val result = api.fetch(cursor)
+            if (result.items.isEmpty()) {
+                result.nextCursor?.let { bidir.setLastPullCursor(it) }
+                return
+            }
+            bidir.applyServerChanges(
+                result.items,
+                mergeStrategy,
+                result.serverTimeMs,
+                lastPullAtMs
+            )
+            result.nextCursor?.let { bidir.setLastPullCursor(it) }
+            lastPullAtMs = System.currentTimeMillis()
+            _events.emit(SyncEngineEvent.PullSuccess(result.items.size))
+        } catch (e: Exception) {
+            _events.emit(SyncEngineEvent.PullFailed(e.message ?: "Unknown error"))
+        }
     }
 
     private suspend fun flushIfNeeded(force: Boolean, maxBatches: Int?) {

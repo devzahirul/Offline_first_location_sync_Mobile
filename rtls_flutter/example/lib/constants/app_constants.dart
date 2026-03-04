@@ -2,7 +2,8 @@
 class AppConstants {
   AppConstants._();
 
-  static const String defaultBaseUrl = 'http://localhost:3000';
+  /// Use your Mac's LAN IP + port when testing from a device (e.g. http://192.168.0.102:3000)
+  static const String defaultBaseUrl = 'http://192.168.0.102:3000';
   static const String defaultUserId = 'flutter-user-1';
   static const String defaultDeviceId = 'flutter-device-1';
   static const String defaultToken = 'demo-token';

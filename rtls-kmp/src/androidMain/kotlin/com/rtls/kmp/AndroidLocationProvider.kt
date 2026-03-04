@@ -84,7 +84,12 @@ class AndroidLocationProvider(private val context: Context) {
 
         val callback = object : LocationCallback() {
             override fun onLocationResult(result: com.google.android.gms.location.LocationResult) {
-                result.lastLocation?.let { loc -> trySend(loc.toLocationPoint(userId, deviceId)) }
+                val locations = result.locations
+                if (!locations.isNullOrEmpty()) {
+                    locations.forEach { loc -> trySend(loc.toLocationPoint(userId, deviceId)) }
+                } else {
+                    result.lastLocation?.let { loc -> trySend(loc.toLocationPoint(userId, deviceId)) }
+                }
             }
         }
 
@@ -131,7 +136,7 @@ class AndroidLocationProvider(private val context: Context) {
             id = UUID.randomUUID().toString(),
             userId = userId,
             deviceId = deviceId,
-            recordedAtMs = System.currentTimeMillis(),
+            recordedAtMs = if (time > 0L) time else System.currentTimeMillis(),
             lat = latitude,
             lng = longitude,
             horizontalAccuracy = if (hasAccuracy()) accuracy.toDouble() else null,

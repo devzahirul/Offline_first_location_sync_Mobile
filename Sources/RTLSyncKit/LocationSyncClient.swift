@@ -170,6 +170,11 @@ public actor LocationSyncClient {
         await syncEngine.flushNow(maxBatches: maxBatches)
     }
 
+    /// Run one pull cycle (fetch from server, apply to local). No-op if engine is upload-only.
+    public func pullNow() async {
+        await syncEngine.pullNow()
+    }
+
     public func stats() async -> LocationSyncClientStats {
         do {
             let count = try await store.pendingCount()

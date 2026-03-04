@@ -5,7 +5,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
-import java.io.File
 
 object RTLSKmp {
 
@@ -21,9 +20,7 @@ object RTLSKmp {
         retentionPolicy: RetentionPolicy = RetentionPolicy.Recommended,
         networkMonitor: NetworkMonitor? = AndroidNetworkMonitor(context)
     ): LocationSyncClient {
-        val dbDir = File(context.filesDir, "rtls_kmp").apply { mkdirs() }
-        val dbPath = File(dbDir, "rtlsync.db").absolutePath
-        val store = SqliteLocationStore(dbPath)
+        val store = SqliteLocationStore(context)
         val tokenProvider = AuthTokenProvider { accessToken }
         val api = OkHttpLocationSyncAPI(baseUrl.trimEnd('/'), tokenProvider)
         val syncEngine = SyncEngine(

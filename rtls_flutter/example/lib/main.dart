@@ -23,6 +23,8 @@ class RTLSExampleApp extends StatelessWidget {
       title: 'RTLS Flutter Example',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.light,
+      darkTheme: AppTheme.dark,
+      themeMode: ThemeMode.system,
       home: const HomeScreen(),
     );
   }

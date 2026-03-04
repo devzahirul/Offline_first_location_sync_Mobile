@@ -37,15 +37,57 @@ public class RtlsFlutterPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
                 result(FlutterError(code: "CONFIG", message: error.localizedDescription, details: nil))
                 return
             }
+
+            let trackingPolicy: TrackingPolicy
+            let intervalSec = (args["locationIntervalSeconds"] as? NSNumber)?.doubleValue
+            let distanceM = (args["locationDistanceMeters"] as? NSNumber)?.doubleValue
+            let significantOnly = (args["useSignificantLocationOnly"] as? NSNumber)?.boolValue ?? false
+            if significantOnly {
+                trackingPolicy = .distance(meters: 500)
+            } else if let sec = intervalSec, sec > 0 {
+                trackingPolicy = .time(interval: sec)
+            } else if let m = distanceM, m > 0 {
+                trackingPolicy = .distance(meters: m)
+            } else {
+                trackingPolicy = .default
+            }
+
+            let batchMax = (args["batchMaxSize"] as? NSNumber)?.intValue ?? 50
+            let flushSec = (args["flushIntervalSeconds"] as? NSNumber)?.doubleValue ?? 10
+            let maxAgeSec = (args["maxBatchAgeSeconds"] as? NSNumber)?.doubleValue ?? 60
+            let batchingPolicy = BatchingPolicy(
+                maxBatchSize: max(1, batchMax),
+                flushInterval: max(1, flushSec),
+                maxBatchAge: max(1, maxAgeSec)
+            )
+
+            var locationConfig = LocationProvider.Configuration()
+            locationConfig.allowsBackgroundLocationUpdates = true
+            locationConfig.pausesLocationUpdatesAutomatically = false
+            locationConfig.showsBackgroundLocationIndicator = true
+            locationConfig.useSignificantLocationChanges = significantOnly
+            switch trackingPolicy {
+            case .time:
+                locationConfig.distanceFilter = kCLDistanceFilterNone
+            case .distance(let meters):
+                locationConfig.distanceFilter = meters
+            }
+
             let config = LocationSyncClientConfiguration(
                 baseURL: baseURL,
                 authTokenProvider: provider,
                 userId: userId,
                 deviceId: deviceId,
-                databaseURL: databaseURL
+                trackingPolicy: trackingPolicy,
+                batchingPolicy: batchingPolicy,
+                databaseURL: databaseURL,
+                locationProviderConfiguration: locationConfig
             )
             Task {
                 do {
+                    if let old = await MainActor.run(body: { self.client }) {
+                        await old.stopTracking()
+                    }
                     let c = try await LocationSyncClient(configuration: config)
                     await MainActor.run {
                         self.client = c
@@ -139,8 +181,8 @@ public class RtlsFlutterPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
             return ["type": "trackingStarted"]
         case .trackingStopped:
             return ["type": "trackingStopped"]
-        case .authorizationChanged:
-            return ["type": "authorizationChanged"]
+        case .authorizationChanged(let auth):
+            return ["type": "authorizationChanged", "authorization": String(describing: auth)]
         }
     }
 

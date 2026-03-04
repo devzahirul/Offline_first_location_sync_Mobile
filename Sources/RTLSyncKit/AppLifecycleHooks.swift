@@ -42,7 +42,10 @@ public final class RTLSAppLifecycleHooks: NSObject {
     }
 
     @objc private func willEnterForeground() {
-        Task { await client.flushNow() }
+        Task {
+            await client.pullNow()
+            await client.flushNow()
+        }
     }
 
     @objc private func didEnterBackground() {

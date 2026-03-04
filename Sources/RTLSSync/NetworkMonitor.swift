@@ -2,7 +2,7 @@ import Foundation
 import Network
 
 public actor NetworkMonitor {
-    private let monitor: NWPathMonitor
+    private var monitor: NWPathMonitor?
     private let queue: DispatchQueue
 
     private var started = false
@@ -14,7 +14,7 @@ public actor NetworkMonitor {
     public nonisolated var updates: AsyncStream<Bool> { statusStream }
 
     public init() {
-        self.monitor = NWPathMonitor()
+        self.monitor = nil
         self.queue = DispatchQueue(label: "RTLSyncKit.NetworkMonitor")
 
         let (stream, continuation) = AsyncStream<Bool>.makeStream(bufferingPolicy: .bufferingNewest(16))
@@ -26,16 +26,18 @@ public actor NetworkMonitor {
         guard !started else { return }
         started = true
 
-        monitor.pathUpdateHandler = { [weak self] path in
+        let newMonitor = NWPathMonitor()
+        newMonitor.pathUpdateHandler = { [weak self] path in
             let isOnline = path.status == .satisfied
             Task { await self?.setOnline(isOnline) }
         }
-
-        monitor.start(queue: queue)
+        newMonitor.start(queue: queue)
+        monitor = newMonitor
     }
 
     public func stop() {
-        monitor.cancel()
+        monitor?.cancel()
+        monitor = nil
         started = false
     }
 

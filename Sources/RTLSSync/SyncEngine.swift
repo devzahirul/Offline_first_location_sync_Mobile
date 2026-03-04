@@ -4,23 +4,32 @@ import RTLSCore
 public enum SyncEngineEvent: Sendable, Equatable {
     case didUpload(accepted: Int, rejected: Int)
     case uploadFailed(String)
+    case didPull(count: Int)
+    case pullFailed(String)
 }
 
 public actor SyncEngine {
     private let store: LocationStore
+    private let bidirectionalStore: (any BidirectionalLocationStore)?
     private let api: LocationSyncAPI
+    private let pullAPI: (any LocationPullAPI)?
+    private let mergeStrategy: (any LocationMergeStrategy)?
     private let batching: BatchingPolicy
     private let retryPolicy: SyncRetryPolicy
     private let retentionPolicy: RetentionPolicy
     private let network: NetworkMonitor
+    private let pullInterval: TimeInterval?
+    private let pullOnForeground: Bool
 
     private var timerTask: Task<Void, Never>?
     private var networkTask: Task<Void, Never>?
+    private var pullTask: Task<Void, Never>?
     private var flushing = false
 
     private var failureCount = 0
     private var nextAllowedFlushAt: Date?
     private var lastPruneAt: Date?
+    private var lastPullAt: Date?
 
     private let eventsStream: AsyncStream<SyncEngineEvent>
     private let continuation: AsyncStream<SyncEngineEvent>.Continuation
@@ -32,14 +41,23 @@ public actor SyncEngine {
         batchingPolicy: BatchingPolicy,
         retryPolicy: SyncRetryPolicy = .default,
         retentionPolicy: RetentionPolicy = .recommended,
-        network: NetworkMonitor = NetworkMonitor()
+        network: NetworkMonitor = NetworkMonitor(),
+        pullAPI: (any LocationPullAPI)? = nil,
+        mergeStrategy: (any LocationMergeStrategy)? = nil,
+        pullInterval: TimeInterval? = nil,
+        pullOnForeground: Bool = true
     ) {
         self.store = store
+        self.bidirectionalStore = store as? any BidirectionalLocationStore
         self.api = api
+        self.pullAPI = pullAPI
+        self.mergeStrategy = mergeStrategy
         self.batching = batchingPolicy
         self.retryPolicy = retryPolicy
         self.retentionPolicy = retentionPolicy
         self.network = network
+        self.pullInterval = pullInterval
+        self.pullOnForeground = pullOnForeground
 
         let (stream, continuation) = AsyncStream<SyncEngineEvent>.makeStream(bufferingPolicy: .bufferingNewest(64))
         self.eventsStream = stream
@@ -66,6 +84,17 @@ public actor SyncEngine {
                 }
             }
         }
+
+        if pullAPI != nil, let bidir = bidirectionalStore {
+            let interval = pullInterval ?? 60.0
+            pullTask?.cancel()
+            pullTask = Task { [pullAPI, mergeStrategy] in
+                while !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: UInt64(max(1.0, interval) * 1_000_000_000))
+                    await self.runPullOnce(pullAPI: pullAPI!, store: bidir, mergeStrategy: mergeStrategy)
+                }
+            }
+        }
     }
 
     public func stop() {
@@ -74,6 +103,9 @@ public actor SyncEngine {
 
         networkTask?.cancel()
         networkTask = nil
+
+        pullTask?.cancel()
+        pullTask = nil
 
         Task { await network.stop() }
     }
@@ -84,6 +116,12 @@ public actor SyncEngine {
 
     public func flushNow(maxBatches: Int? = nil) async {
         await flushIfNeeded(force: true, maxBatches: maxBatches)
+    }
+
+    /// Run one pull cycle (fetch from server, apply to local). No-op if pull or bidirectional store not configured.
+    public func pullNow() async {
+        guard let pullAPI, let bidir = bidirectionalStore else { return }
+        await runPullOnce(pullAPI: pullAPI, store: bidir, mergeStrategy: mergeStrategy)
     }
 
     private func flushIfNeeded(force: Bool, maxBatches: Int? = nil) async {
@@ -173,6 +211,36 @@ public actor SyncEngine {
         let delay = max(0.0, baseDelay * factor)
 
         nextAllowedFlushAt = Date().addingTimeInterval(delay)
+    }
+
+    private func runPullOnce(
+        pullAPI: any LocationPullAPI,
+        store: any BidirectionalLocationStore,
+        mergeStrategy: (any LocationMergeStrategy)?
+    ) async {
+        do {
+            let cursor = try await store.getLastPullCursor()
+            let result = try await pullAPI.fetch(since: cursor)
+            guard !result.items.isEmpty else {
+                if let next = result.nextCursor {
+                    try await store.setLastPullCursor(next)
+                }
+                return
+            }
+            try await store.applyServerChanges(
+                result.items,
+                mergeStrategy: mergeStrategy,
+                serverTime: result.serverTime,
+                lastSyncAt: lastPullAt
+            )
+            if let next = result.nextCursor {
+                try await store.setLastPullCursor(next)
+            }
+            lastPullAt = Date()
+            continuation.yield(.didPull(count: result.items.count))
+        } catch {
+            continuation.yield(.pullFailed(String(describing: error)))
+        }
     }
 
     private func maybePruneSentPoints(now: Date) async {

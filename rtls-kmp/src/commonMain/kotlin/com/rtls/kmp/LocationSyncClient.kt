@@ -78,6 +78,13 @@ class LocationSyncClient(
         return LocationSyncClientStats(pendingCount = count, oldestPendingRecordedAtMs = oldest)
     }
 
+    /**
+     * Run one pull cycle (fetch from server, apply to local). No-op if engine is upload-only.
+     */
+    suspend fun pullNow() {
+        syncEngine.pullNow()
+    }
+
     suspend fun flushNow() {
         syncEngine.flushNow()
     }

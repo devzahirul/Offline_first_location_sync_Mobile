@@ -17,7 +17,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import com.rtls.kmp.BatchingPolicy
@@ -59,6 +58,7 @@ class RtlsFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, EventC
         eventChannel = null
         client?.stopTracking()
         client = null
+        context?.let { RtlsLocationForegroundService.stop(it) }
         context = null
     }
 
@@ -104,6 +104,8 @@ class RtlsFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, EventC
                 if (requestCode != REQUEST_CODE_LOCATION) return false
                 binding.removeRequestPermissionsResultListener(this)
                 val granted = grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED }
+                val authStatus = if (granted) "authorizedAlways" else "denied"
+                eventSink?.success(mapOf("type" to "authorizationChanged", "authorization" to authStatus))
                 result.success(granted)
                 return true
             }
@@ -240,7 +242,7 @@ class RtlsFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, EventC
         val c = client ?: return
         val sink = eventSink ?: return
         eventCollectionJob = scope.launch {
-            c.events.collectLatest { event ->
+            c.events.collect { event ->
                 val map: Map<String, Any?> = when (event) {
                     is LocationSyncClientEvent.Recorded -> mapOf(
                         "type" to "recorded",
@@ -283,7 +285,19 @@ class RtlsFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, EventC
 
     override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
         eventSink = events
+        emitAuthorizationStatusIfReady()
         startEventCollectionIfReady()
+    }
+
+    private fun emitAuthorizationStatusIfReady() {
+        val ctx = context ?: return
+        val sink = eventSink ?: return
+        val authStatus = when {
+            ContextCompat.checkSelfPermission(ctx, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED -> "denied"
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && ContextCompat.checkSelfPermission(ctx, Manifest.permission.ACCESS_BACKGROUND_LOCATION) != PackageManager.PERMISSION_GRANTED -> "authorizedWhenInUse"
+            else -> "authorizedAlways"
+        }
+        sink.success(mapOf("type" to "authorizationChanged", "authorization" to authStatus))
     }
 
     override fun onCancel(arguments: Any?) {
