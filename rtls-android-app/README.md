@@ -1,12 +1,22 @@
 # RTLS Native Android App
 
-**Reference Android client** for the Real-Time Location Sync backend. Standalone Kotlin app that consumes the rtls-kmp library—single Activity, ViewBinding, FusedLocationProvider/LocationManager fallback, and a minimal config + status UI.
+**Reference Android client** for the Real-Time Location Sync backend. Standalone Kotlin app that consumes the modular rtls-kmp library (five independent Gradle submodules)—single Activity, ViewBinding, FusedLocationProvider/LocationManager fallback, and a minimal config + status UI.
 
 ---
 
 ## Architecture
 
-Single-Activity app with a Gradle subproject dependency on `rtls-kmp`. The KMP library owns persistence (SQLite), batching, retry, retention, and network gating; the app wires `LocationSyncClient` and `SyncEngine` to Android location APIs and a simple UI.
+Single-Activity app that depends on the multi-module `rtls-kmp` structure. Each capability lives in its own Gradle module:
+
+| Module | What it provides |
+|--------|-----------------|
+| `rtls-core` | Models, interfaces, policies |
+| `rtls-offline-sync` | SyncEngine, SqliteLocationStore, OkHttpLocationSyncAPI, OfflineSyncClient |
+| `rtls-websocket` | RealTimeLocationClient, OkHttpRealTimeChannel, auto-reconnect |
+| `rtls-location` | AndroidLocationProvider, LocationRecordingDecider, AndroidNetworkMonitor |
+| `rtls-client` | RTLSClient orchestrator, RTLSClientFactory Builder |
+
+The app depends on `rtls-client`, which transitively pulls in all other modules. The KMP library owns persistence (SQLite), batching, retry, retention, WebSocket streaming, and network gating; the app wires the `RTLSClient` to a simple config + status UI.
 
 | Layer | Responsibility |
 |-------|----------------|
@@ -19,8 +29,8 @@ Single-Activity app with a Gradle subproject dependency on `rtls-kmp`. The KMP l
 
 ## Features
 
-- **Config:** baseUrl, userId, deviceId, token—applied once via Configure; used to instantiate `RTLSKmp.createLocationSyncClient()`.
-- **Tracking:** Start/Stop; location collected via `RTLSKmp.createLocationFlow()` (Fused or LocationManager), fed into `LocationSyncClient.startCollectingLocation()`.
+- **Config:** baseUrl, userId, deviceId, token—applied once via Configure; used to instantiate `RTLSClientFactory.Builder(context).…build()`.
+- **Tracking:** Start/Stop; location flow built via `RTLSClientFactory`, fed into `RTLSClient.startCollectingLocation()`.
 - **Flush:** "Flush now" calls `client.flushNow()` for immediate upload within engine policy.
 - **Status:** Pending count and last event from `client.stats()` and `client.events`.
 - **Permissions:** Runtime request for `ACCESS_FINE_LOCATION`, `ACCESS_COARSE_LOCATION`, `ACCESS_BACKGROUND_LOCATION` (Android 10+); requested before tracking.
@@ -31,7 +41,7 @@ Single-Activity app with a Gradle subproject dependency on `rtls-kmp`. The KMP l
 
 ## Build & Run
 
-**Prerequisites:** Android SDK (API 21+). `rtls-kmp` must be a sibling project (`../rtls-kmp`) or path-adjusted in `settings.gradle.kts`.
+**Prerequisites:** Android SDK (API 21+). The `rtls-kmp` directory (containing all five submodules) must be a sibling directory (`../rtls-kmp`) or paths adjusted in `settings.gradle.kts`.
 
 ```bash
 cd rtls-android-app
@@ -47,7 +57,23 @@ Or open in Android Studio and run the `app` configuration.
 
 ## Integration Notes
 
-- **Subproject:** `implementation(project(":rtls-kmp"))`; `project(":rtls-kmp").projectDir = file("../rtls-kmp")`. Adjust path if repo layout changes.
+- **Subproject dependencies:** The app's `settings.gradle.kts` includes individual modules from `../rtls-kmp/`:
+
+  ```kotlin
+  include(":rtls-core")
+  include(":rtls-offline-sync")
+  include(":rtls-websocket")
+  include(":rtls-location")
+  include(":rtls-client")
+
+  project(":rtls-core").projectDir = file("../rtls-kmp/rtls-core")
+  project(":rtls-offline-sync").projectDir = file("../rtls-kmp/rtls-offline-sync")
+  project(":rtls-websocket").projectDir = file("../rtls-kmp/rtls-websocket")
+  project(":rtls-location").projectDir = file("../rtls-kmp/rtls-location")
+  project(":rtls-client").projectDir = file("../rtls-kmp/rtls-client")
+  ```
+
+  **app/build.gradle.kts:** `implementation(project(":rtls-client"))` (pulls all modules transitively). For a lighter build, depend only on the specific modules you need (e.g., `":rtls-offline-sync"`).
 - **Backend:** Same API as iOS/Flutter: `POST /v1/locations/batch` (Bearer token). Emulator: `http://10.0.2.2:3000`; physical device: host LAN IP, backend on `0.0.0.0`.
 - **Min SDK 21, target 34.**
 

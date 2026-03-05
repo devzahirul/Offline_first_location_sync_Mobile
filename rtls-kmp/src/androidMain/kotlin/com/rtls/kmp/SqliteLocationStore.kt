@@ -104,7 +104,7 @@ class SqliteLocationStore(private val context: Context) : LocationStore, SentPoi
         val db = helper.writableDatabase
         for (chunk in pointIds.chunked(999)) {
             val placeholders = chunk.joinToString(",") { "?" }
-            val args = arrayOf(sentAtMs.toString()) + chunk.toTypedArray()
+            val args = (listOf<Any?>(sentAtMs) + chunk).toTypedArray()
             db.execSQL("UPDATE location_points SET sent_at = ? WHERE id IN ($placeholders)", args)
         }
     }
@@ -115,7 +115,7 @@ class SqliteLocationStore(private val context: Context) : LocationStore, SentPoi
         val db = helper.writableDatabase
         for (chunk in pointIds.chunked(999)) {
             val placeholders = chunk.joinToString(",") { "?" }
-            val args = arrayOf(now.toString(), errorMessage) + chunk.toTypedArray()
+            val args = (listOf<Any?>(now, errorMessage) + chunk).toTypedArray()
             db.execSQL("UPDATE location_points SET failed_at = ?, error_message = ? WHERE id IN ($placeholders)", args)
         }
     }

@@ -25,7 +25,7 @@ class OkHttpLocationSyncAPI(
         .build()
 ) : LocationSyncAPI {
 
-    private val json = Json { ignoreUnknownKeys = true }
+    private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
     private fun gzipRequestBody(original: RequestBody): RequestBody = object : RequestBody() {
         override fun contentType() = original.contentType()

@@ -12,5 +12,13 @@
             android:enabled="true"
             android:exported="false"
             android:foregroundServiceType="location" />
+        <receiver
+            android:name=".RtlsLocationBroadcastReceiver"
+            android:enabled="true"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.rtls.flutter.LOCATION_UPDATE" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>

@@ -1,6 +1,8 @@
 import http from "node:http";
+import { createGunzip } from "node:zlib";
 import os from "node:os";
 import express from "express";
+import type { Request, Response, NextFunction } from "express";
 
 function getLanIp(): string | null {
   const ifaces = os.networkInterfaces();
@@ -13,9 +15,9 @@ function getLanIp(): string | null {
   return null;
 }
 import WebSocket, { WebSocketServer } from "ws";
-import { UploadBatchSchema, WsSubscribeSchema } from "./validation.js";
+import { UploadBatchSchema, WsSubscribeSchema, WsClientMessageSchema, PullQuerySchema } from "./validation.js";
 import type { LocationUploadResult, WsLocationEnvelope } from "./types.js";
-import { createDB, insertPoints, latestPointForUser } from "./db.js";
+import { createDB, insertPoints, latestPointForUser, pullPointsForUser } from "./db.js";
 import { requireAuth } from "./auth.js";
 import { WsHub } from "./wsHub.js";
 import { loadDotEnvIfPresent } from "./env.js";
@@ -30,7 +32,26 @@ app.use((req, res, next) => {
   if (req.method === "OPTIONS") return res.sendStatus(204);
   next();
 });
-app.use(express.json({ limit: "2mb" }));
+const jsonParser = express.json({ limit: "2mb" });
+app.use((req: Request, res: Response, next: NextFunction) => {
+  if (req.headers["content-encoding"] === "gzip") {
+    const chunks: Buffer[] = [];
+    const gunzip = createGunzip();
+    req.pipe(gunzip);
+    gunzip.on("data", (chunk: Buffer) => chunks.push(chunk));
+    gunzip.on("end", () => {
+      try {
+        (req as any).body = JSON.parse(Buffer.concat(chunks).toString("utf-8"));
+      } catch (e) {
+        return res.status(400).json({ error: "Invalid gzip JSON body" });
+      }
+      next();
+    });
+    gunzip.on("error", () => res.status(400).json({ error: "gzip decompression failed" }));
+  } else {
+    jsonParser(req, res, next);
+  }
+});
 
 const hub = new WsHub();
 const latestByUser = new Map<string, any>();
@@ -79,7 +100,41 @@ app.post("/v1/locations/batch", async (req, res) => {
     };
     res.json(out);
   } catch (e: any) {
-    if (e?.name === "ZodError") return res.status(400).json({ error: e.issues });
+    if (e?.name === "ZodError") {
+      const issues = e.issues as Array<{ path: (string | number)[]; message: string; code: string; received?: unknown }>;
+      const first = issues[0];
+      const path = first?.path?.length ? first.path.join(".") : "body";
+      const hint = first?.received === undefined ? " (missing)" : first?.received === null ? " (null)" : "";
+      return res.status(400).json({
+        error: `Validation failed: ${path} — ${first?.message ?? "invalid"}${hint}`,
+        details: issues.map((i) => ({ path: i.path.join("."), message: i.message, received: i.received })),
+      });
+    }
+    const msg = e?.message ?? "error";
+    const code = msg.includes("Authorization") ? 401 : 500;
+    res.status(code).json({ error: msg });
+  }
+});
+
+app.get("/v1/locations/pull", async (req, res) => {
+  try {
+    requireAuth(req);
+    const { userId, cursor, limit } = PullQuerySchema.parse(req.query);
+
+    if (!db) {
+      return res.json({ points: [], serverTime: Date.now() });
+    }
+
+    const result = await pullPointsForUser(db, userId, cursor, limit);
+    res.json({
+      points: result.points,
+      nextCursor: result.nextCursor,
+      serverTime: Date.now(),
+    });
+  } catch (e: any) {
+    if (e?.name === "ZodError") {
+      return res.status(400).json({ error: "Invalid pull parameters", details: e.issues });
+    }
     const msg = e?.message ?? "error";
     const code = msg.includes("Authorization") ? 401 : 500;
     res.status(code).json({ error: msg });
@@ -90,29 +145,128 @@ const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: "/v1/ws" });
 
 wss.on("connection", (socket, req) => {
-  const auth = req.headers["authorization"]?.toString();
-  const secret = process.env.JWT_SECRET;
-  if (secret && !auth) {
-    socket.close(1008, "missing Authorization header");
-    return;
-  }
+  let authenticated = !process.env.JWT_SECRET;
+  let socketUserId: string | null = null;
 
-  let subscribedUserId: string | null = null;
+  const sendJson = (obj: any) => {
+    if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(obj));
+  };
 
-  socket.on("message", (data) => {
+  socket.on("message", async (data) => {
+    let raw: any;
     try {
-      const raw = JSON.parse(data.toString("utf8"));
-      const msg = WsSubscribeSchema.parse(raw);
-      subscribedUserId = msg.userId;
-      hub.addSubscriber(subscribedUserId, socket);
-      socket.send(JSON.stringify({ type: "subscribed", userId: subscribedUserId }));
+      raw = JSON.parse(data.toString("utf8"));
     } catch {
-      socket.send(JSON.stringify({ type: "error", message: "invalid subscribe message" }));
+      sendJson({ type: "error", message: "Invalid JSON" });
+      return;
+    }
+
+    let msg: any;
+    try {
+      msg = WsClientMessageSchema.parse(raw);
+    } catch {
+      // Backward compat: try old subscribe format
+      try {
+        const old = WsSubscribeSchema.parse(raw);
+        msg = { type: "subscribe", userId: old.userId };
+      } catch {
+        sendJson({ type: "error", message: "Unknown message format" });
+        return;
+      }
+    }
+
+    switch (msg.type) {
+      case "auth": {
+        if (process.env.JWT_SECRET) {
+          try {
+            const jwt = await import("jsonwebtoken");
+            jwt.default.verify(msg.token, process.env.JWT_SECRET);
+            authenticated = true;
+            sendJson({ type: "auth.ok" });
+          } catch {
+            sendJson({ type: "error", message: "Authentication failed" });
+            socket.close(1008, "auth failed");
+          }
+        } else {
+          authenticated = true;
+          sendJson({ type: "auth.ok" });
+        }
+        break;
+      }
+
+      case "location.push": {
+        if (!authenticated) { sendJson({ type: "error", message: "Not authenticated" }); return; }
+        const point = msg.point;
+        try {
+          if (db) await insertPoints(db, [point]);
+          latestByUser.set(point.userId, point);
+          hub.broadcast(point.userId, JSON.stringify({ type: "location.update", point }));
+          sendJson({ type: "location.ack", reqId: msg.reqId, pointId: point.id, status: "accepted" });
+        } catch (e: any) {
+          sendJson({ type: "location.ack", reqId: msg.reqId, pointId: point.id, status: "rejected" });
+        }
+        break;
+      }
+
+      case "location.batch": {
+        if (!authenticated) { sendJson({ type: "error", message: "Not authenticated" }); return; }
+        try {
+          if (db) await insertPoints(db, msg.points);
+          const acceptedIds: string[] = [];
+          for (const p of msg.points) {
+            latestByUser.set(p.userId, p);
+            hub.broadcast(p.userId, JSON.stringify({ type: "location.update", point: p }));
+            acceptedIds.push(p.id);
+          }
+          sendJson({ type: "location.batch_ack", reqId: msg.reqId, acceptedIds, rejected: [] });
+        } catch (e: any) {
+          sendJson({ type: "error", message: e?.message ?? "Batch insert failed" });
+        }
+        break;
+      }
+
+      case "subscribe": {
+        hub.addSubscriber(msg.userId, socket);
+        sendJson({ type: "subscribed", userId: msg.userId });
+        break;
+      }
+
+      case "unsubscribe": {
+        hub.removeSubscriber(msg.userId, socket);
+        sendJson({ type: "unsubscribed", userId: msg.userId });
+        break;
+      }
+
+      case "sync.pull": {
+        if (!authenticated) { sendJson({ type: "error", message: "Not authenticated" }); return; }
+        if (!db) {
+          sendJson({ type: "sync.result", reqId: msg.reqId, points: [], serverTime: Date.now() });
+          break;
+        }
+        try {
+          const result = await pullPointsForUser(db, socketUserId ?? "", msg.cursor, msg.limit ?? 100);
+          sendJson({
+            type: "sync.result",
+            reqId: msg.reqId,
+            points: result.points,
+            cursor: result.nextCursor,
+            serverTime: Date.now(),
+          });
+        } catch (e: any) {
+          sendJson({ type: "error", message: e?.message ?? "Pull failed" });
+        }
+        break;
+      }
+
+      case "ping": {
+        sendJson({ type: "pong" });
+        break;
+      }
     }
   });
 
   socket.on("close", () => {
-    if (subscribedUserId) hub.removeSubscriber(subscribedUserId, socket);
+    hub.removeAllSubscriptions(socket);
   });
 });
 

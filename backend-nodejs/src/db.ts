@@ -87,3 +87,50 @@ export async function latestPointForUser(db: DB, userId: string): Promise<Locati
   return (result.rows[0] as LocationPoint | undefined) ?? null;
 }
 
+export async function pullPointsForUser(
+  db: DB,
+  userId: string,
+  cursor?: string,
+  limit: number = 100
+): Promise<{ points: any[]; nextCursor?: string }> {
+  let query: string;
+  let params: any[];
+
+  if (cursor) {
+    query = `
+      SELECT id, user_id AS "userId", device_id AS "deviceId",
+        EXTRACT(EPOCH FROM recorded_at) * 1000 AS "recordedAt",
+        lat, lng, horizontal_accuracy AS "horizontalAccuracy",
+        vertical_accuracy AS "verticalAccuracy",
+        altitude, speed, course
+      FROM location_points
+      WHERE user_id = $1 AND recorded_at > $2::timestamptz
+      ORDER BY recorded_at ASC
+      LIMIT $3
+    `;
+    params = [userId, new Date(cursor), limit + 1];
+  } else {
+    query = `
+      SELECT id, user_id AS "userId", device_id AS "deviceId",
+        EXTRACT(EPOCH FROM recorded_at) * 1000 AS "recordedAt",
+        lat, lng, horizontal_accuracy AS "horizontalAccuracy",
+        vertical_accuracy AS "verticalAccuracy",
+        altitude, speed, course
+      FROM location_points
+      WHERE user_id = $1
+      ORDER BY recorded_at ASC
+      LIMIT $2
+    `;
+    params = [userId, limit + 1];
+  }
+
+  const result = await db.pool.query(query, params);
+  const hasMore = result.rows.length > limit;
+  const points = hasMore ? result.rows.slice(0, limit) : result.rows;
+  const nextCursor = hasMore && points.length > 0
+    ? new Date(points[points.length - 1].recordedAt).toISOString()
+    : undefined;
+
+  return { points, nextCursor };
+}
+

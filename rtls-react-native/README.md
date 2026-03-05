@@ -2,6 +2,8 @@
 
 React Native native module providing **offline-first location sync** with a unified JavaScript API across **iOS and Android**. iOS delegates to the [RTLSyncKit](https://github.com/devzahirul/Offline_first_location_sync_iOS) Swift engine; Android wraps the shared [rtls-kmp](../rtls-kmp/README.md) Kotlin Multiplatform sync engine — the same core that powers the native Android app and the Flutter plugin's Android layer.
 
+> **Modular architecture (v2):** Both native engines have been restructured into independent modules. The Android side now consumes individual KMP Gradle modules (`rtls-core`, `rtls-offline-sync`, `rtls-location`) instead of the monolithic `rtls-kmp` artifact. The iOS side can depend on individual SwiftPM targets (`RTLSOfflineSync`, `RTLSWebSocket`, `RTLSLocation`) or the umbrella `RTLSyncKit`. See [MODULAR_ARCHITECTURE.md](../MODULAR_ARCHITECTURE.md) for details.
+
 ---
 
 ## Architecture
@@ -14,13 +16,15 @@ React Native native module providing **offline-first location sync** with a unif
 │  NativeEventEmitter → event subscriptions    │
 ├──────────────┬───────────────────────────────┤
 │  iOS (Swift) │        Android (Kotlin)       │
-│  RTLSyncKit  │        rtls-kmp SyncEngine    │
-│  CLLocation  │        FusedLocation +        │
-│  Manager     │        ForegroundService      │
+│  RTLSyncKit  │        rtls-core              │
+│  (modular:   │        rtls-offline-sync      │
+│  RTLSLocation│        rtls-location          │
+│  RTLSOffline │        FusedLocation +        │
+│  RTLSWebSock)│        ForegroundService      │
 └──────────────┴───────────────────────────────┘
 ```
 
-Both platforms converge on the same backend contract: `POST /v1/locations/batch`, `GET /v1/locations/latest`, WebSocket `/v1/ws`.
+Both platforms converge on the same backend contract: `POST /v1/locations/batch`, `GET /v1/locations/latest`, `GET /v1/locations/pull`, WebSocket `/v1/ws` (v2 protocol with bidirectional push).
 
 ---
 
@@ -128,16 +132,24 @@ All events are emitted through React Native's `NativeEventEmitter`, ensuring thr
 
 ## Android Integration
 
-### 1. Include rtls-kmp
+### 1. Include KMP modules
 
-The module's Android layer depends on `rtls-kmp` as a Gradle project dependency. The host app must include it.
+The module's Android layer depends on individual KMP Gradle modules rather than the monolithic `rtls-kmp`. The host app must include the required modules.
 
 **android/settings.gradle.kts:**
 
 ```kotlin
-include(":rtls_kmp")
-project(":rtls_kmp").projectDir = file("../../rtls-kmp") // adjust path
+include(":rtls-core")
+project(":rtls-core").projectDir = file("../../rtls-kmp/rtls-core")
+
+include(":rtls-offline-sync")
+project(":rtls-offline-sync").projectDir = file("../../rtls-kmp/rtls-offline-sync")
+
+include(":rtls-location")
+project(":rtls-location").projectDir = file("../../rtls-kmp/rtls-location")
 ```
+
+> The legacy single-include `include(":rtls_kmp")` still works but pulls in all modules. Prefer individual includes to keep the dependency footprint minimal.
 
 ### 2. Permissions
 
@@ -173,6 +185,8 @@ cd ios && pod install
 
 Without this step the build fails with `Unable to find module 'RTLSyncKit'`.
 
+> **Selective linking:** RTLSyncKit is now an umbrella that re-exports independent SwiftPM targets. If you only need a subset of functionality, you can link individual targets instead: `RTLSOfflineSync`, `RTLSWebSocket`, `RTLSLocation`, or `RTLSCore`.
+
 **Runtime optimization:** RTLSyncKit is linked at launch but performs zero work (no SQLite, no CoreLocation, no networking) until `configure()` and `startTracking()` are called. The sync engine initializes lazily.
 
 ### Optional: RTLS_LITE build
@@ -206,9 +220,9 @@ npx react-native run-ios
 
 | | iOS | Android |
 |---|-----|---------|
-| **Engine** | RTLSyncKit (Swift) | rtls-kmp (Kotlin Multiplatform) |
+| **Engine** | RTLSyncKit (Swift, modular targets) | rtls-kmp (modular Gradle modules) |
 | **Background** | CLLocationManager always-authorization | Foreground service + FusedLocationProvider |
-| **Host Setup** | Link RTLSyncKit Swift package; CocoaPods | Include `:rtls_kmp` in Gradle; manifest permissions |
+| **Host Setup** | Link RTLSyncKit (or individual targets); CocoaPods | Include `:rtls-core`, `:rtls-offline-sync`, `:rtls-location` in Gradle; manifest permissions |
 | **Permission API** | Maps to CLLocationManager | Maps to ActivityCompat runtime permission |
 
 ---
@@ -216,6 +230,21 @@ npx react-native run-ios
 ## Example App
 
 See [rtls-mobile-example/README.md](../rtls-mobile-example/README.md) — a cross-platform React Native demo covering install order, Swift package linking, Gradle subproject inclusion, and full API usage.
+
+---
+
+## Modular Architecture
+
+The RTLS SDK has been restructured into independent packages across all platforms:
+
+- **KMP (Android):** 5 Gradle modules — `rtls-core`, `rtls-offline-sync`, `rtls-websocket`, `rtls-location`, `rtls-client`
+- **iOS:** 5 SwiftPM targets — `RTLSCore`, `RTLSLocation`, `RTLSOfflineSync`, `RTLSWebSocket`, `RTLSyncKit` (umbrella)
+- **Flutter:** 5 packages — `rtls_core`, `rtls_offline_sync`, `rtls_websocket`, `rtls_location`, `rtls_flutter_unified`
+- **Backend:** WebSocket v2 protocol with bidirectional push + `GET /v1/locations/pull` for historical data
+
+This React Native module benefits from the modular native engines without requiring API changes — the JS interface remains the same. Apps that only need a subset of functionality can link fewer native modules to reduce binary size.
+
+For full details, see [MODULAR_ARCHITECTURE.md](../MODULAR_ARCHITECTURE.md).
 
 ---
 

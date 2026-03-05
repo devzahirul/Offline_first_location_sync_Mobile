@@ -1,304 +1,240 @@
-# rtls-kmp — Android Location Sync Engine
+# rtls-kmp — Modular Android Location Sync Engine
 
-Kotlin Multiplatform library (Android target) implementing offline-first location sync: GPS → SQLite → batched HTTP upload with exponential backoff, network gating, and configurable retention pruning. Single source of truth for all Android sync — consumed by native app, Flutter plugin, and React Native module.
-
----
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                          commonMain                                  │
-│                                                                     │
-│  ┌─────────────────┐  ┌──────────────────┐  ┌───────────────────┐  │
-│  │  LocationStore   │  │ LocationSyncAPI   │  │  NetworkMonitor   │  │
-│  │  (interface)     │  │ (interface)       │  │  (interface)      │  │
-│  │  insert          │  │ upload(batch)     │  │  isOnline()       │  │
-│  │  fetchPending    │  │   → Result        │  │  onlineFlow?      │  │
-│  │  pendingCount    │  └──────────────────┘  └───────────────────┘  │
-│  │  oldestPending   │                                               │
-│  │  markSent        │  ┌──────────────────────────────────────────┐ │
-│  │  markFailed      │  │           SyncEngine                     │ │
-│  └─────────┬────────┘  │  Mutex-serialized flush loop             │ │
-│            │           │  Timer job (flushIntervalSeconds)        │ │
-│  ┌─────────▼────────┐  │  Network-online job (callbackFlow)      │ │
-│  │SentPointsPrunable│  │  shouldFlush(force | count | age)       │ │
-│  │  LocationStore   │  │  Exponential backoff + jitter           │ │
-│  │  pruneSentPoints │  │  Retention pruning (hourly)             │ │
-│  └──────────────────┘  └──────────────────────────────────────────┘ │
-│                                                                     │
-│  ┌───────────────────────────────────────────────────────────────┐  │
-│  │              LocationSyncClient  (facade)                     │  │
-│  │  startCollectingLocation(Flow<LocationPoint>)                 │  │
-│  │  stopTracking() · stats() · flushNow()                        │  │
-│  │  events: SharedFlow<LocationSyncClientEvent>                  │  │
-│  └───────────────────────────────────────────────────────────────┘  │
-│                                                                     │
-│  Policies:  BatchingPolicy · SyncRetryPolicy · RetentionPolicy     │
-│  Models:    LocationPoint · GeoCoordinate · LocationUploadBatch     │
-│             LocationUploadResult · RejectedPoint                    │
-└─────────────────────────────────────────────────────────────────────┘
-                                  │
-                                  │  implementations
-                                  ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                          androidMain                                 │
-│                                                                     │
-│  SqliteLocationStore          Raw SQLite, INSERT OR REPLACE,        │
-│                               fetchPending WHERE sent_at IS NULL,   │
-│                               pruneSentPoints DELETE WHERE          │
-│                               sent_at IS NOT NULL AND               │
-│                               recorded_at < cutoff                  │
-│                                                                     │
-│  OkHttpLocationSyncAPI        POST /v1/locations/batch,             │
-│                               Bearer token,                         │
-│                               kotlinx.serialization JSON            │
-│                                                                     │
-│  AndroidLocationProvider      FusedLocationProviderClient (API≥29)  │
-│                               LocationManager fallback (API≤28)     │
-│                               callbackFlow, getLastKnownLocation    │
-│                               for immediate first fix               │
-│                                                                     │
-│  AndroidNetworkMonitor        ConnectivityManager +                 │
-│                               registerDefaultNetworkCallback →      │
-│                               callbackFlow onlineFlow               │
-│                                                                     │
-│  RTLSKmp                      Factory: createLocationSyncClient,    │
-│                               createLocationFlow                    │
-└─────────────────────────────────────────────────────────────────────┘
-```
-
-No `expect`/`actual` declarations — Android is the only target. `commonMain` defines interfaces and engine logic; `androidMain` provides concrete platform implementations. The boundary is clean: host code touches `RTLSKmp`, `LocationSyncClient`, events, stats, and `LocationRequestParams`. No direct dependency on SQLite or OkHttp types.
+Kotlin Multiplatform library (Android target) split into five independent Gradle modules. Pick only the capabilities you need — offline sync, real-time WebSocket streaming, GPS collection, or all three via the orchestrator. Each module depends only on `rtls-core` and nothing else, so your APK ships exactly the code it uses.
 
 ---
 
-## Sync Engine Deep Dive
+## Module Overview
 
-### Flush Algorithm
-
-`SyncEngine.flushIfNeeded(force, maxBatches)` is the single entry point for all upload attempts. It is called by three triggers:
-
-1. **Timer job** — fires every `BatchingPolicy.flushIntervalSeconds` (default 10s)
-2. **Network-online job** — `AndroidNetworkMonitor.onlineFlow` emits `true` → conditional flush
-3. **notifyNewData()** — called after every `LocationStore.insert()`, evaluates `shouldFlush` before proceeding
-
-The flush is serialized by `Mutex.tryLock()` — non-blocking. If a flush is already in progress, the caller returns immediately. No queuing, no lock contention on the location collection coroutine.
-
-```
-flushIfNeeded(force, maxBatches)
-│
-├── running == false? → return
-├── flushMutex.tryLock() fails? → return (another flush in progress)
-├── !force && now < nextAllowedFlushAtMs? → return (backoff window)
-├── networkMonitor.isOnline() == false? → return (network gate)
-├── shouldFlush(force)?
-│   ├── force == true → yes
-│   ├── pendingCount >= maxBatchSize → yes
-│   ├── oldestPending age >= maxBatchAgeSeconds → yes
-│   └── otherwise → no, return
-│
-└── loop:
-    ├── re-check network gate
-    ├── fetchPendingPoints(maxBatchSize) → empty? → break
-    ├── api.upload(batch)
-    │   ├── success:
-    │   │   ├── markSent(acceptedIds, sentAt)
-    │   │   ├── markFailed(rejectedIds, reason)  ← server rejections only
-    │   │   ├── failureCount = 0, nextAllowedFlushAtMs = null
-    │   │   ├── emit UploadSuccess(accepted, rejected)
-    │   │   └── maybePruneSentPoints()
-    │   └── exception (transport error):
-    │       ├── scheduleBackoffAfterFailure()
-    │       ├── emit UploadFailed(message)
-    │       └── break  ← points remain pending
-    └── maxBatches reached? → break
-```
-
-**Key invariant:** transport errors never mark points as failed. Only explicit server rejections (returned in `LocationUploadResult.rejected`) trigger `markFailed()`. This means a network blip during upload results in a retry on the next flush cycle, not data loss.
-
-### Exponential Backoff
-
-`SyncRetryPolicy` computes delay per attempt:
-
-```
-delay = min(maxDelayMs, baseDelayMs · 2^(attempt-1)) ± (jitterFraction · base)
-```
-
-| Parameter | Default | Purpose |
-|-----------|---------|---------|
-| `baseDelayMs` | 2,000 | Initial retry delay |
-| `maxDelayMs` | 120,000 | Cap (2 minutes) |
-| `jitterFraction` | 0.2 | ±20% randomization to decorrelate retries across devices |
-
-`failureCount` is capped at 30 (`coerceAtMost`) to prevent floating-point overflow in the exponent. Resets to 0 on any successful upload.
-
-The backoff is enforced via `nextAllowedFlushAtMs` — a timestamp. Timer ticks and network events still fire, but `flushIfNeeded` returns early if the current time is before the allowed window. A `force = true` call (manual `flushNow()`) bypasses the backoff check.
-
-### Retention Pruning
-
-`RetentionPolicy.sentPointsMaxAgeMs` controls how long successfully sent points remain on-device. Default: 7 days. `KeepForever` disables pruning entirely.
-
-Pruning executes inside `maybePruneSentPoints()` after each successful upload batch:
-
-- **Minimum interval:** 1 hour between prune operations (avoids thrashing)
-- **Query:** `DELETE FROM location_points WHERE sent_at IS NOT NULL AND recorded_at < cutoff`
-- **Guard:** store must implement `SentPointsPrunableLocationStore` (checked via `as?` cast). If not, pruning is a no-op.
-- **Pending points are never deleted** — only rows with non-null `sent_at`
-
-### Batching Policy
-
-| Parameter | Default | Semantics |
-|-----------|---------|-----------|
-| `maxBatchSize` | 50 | Max points per HTTP request; also the `shouldFlush` count threshold |
-| `flushIntervalSeconds` | 10 | Timer tick interval |
-| `maxBatchAgeSeconds` | 60 | If the oldest pending point is older than this, flush regardless of count |
-
-The three conditions form an OR: **count ≥ threshold** OR **age ≥ maxAge** OR **force**. This means a single point will upload within 60 seconds even if the batch never fills.
+| Module | Package | Depends on | Purpose |
+|--------|---------|------------|---------|
+| **rtls-core** | `com.rtls.core` | — | Models (`LocationPoint`, `GeoCoordinate`), interfaces (`LocationStore`, `LocationSyncAPI`, `NetworkMonitor`), policies (`BatchingPolicy`, `SyncRetryPolicy`, `RetentionPolicy`) |
+| **rtls-offline-sync** | `com.rtls.sync` | rtls-core | `SyncEngine`, `SqliteLocationStore`, `OkHttpLocationSyncAPI`, `OfflineSyncClient` — batched HTTP upload with exponential backoff, bidirectional pull/merge |
+| **rtls-websocket** | `com.rtls.websocket` | rtls-core | `RealTimeLocationClient`, `OkHttpRealTimeChannel` — WebSocket protocol messages, auto-reconnect, push/subscribe |
+| **rtls-location** | `com.rtls.location` | rtls-core | `AndroidLocationProvider`, `LocationRecordingDecider`, `AndroidNetworkMonitor` — GPS via FusedLocationProvider / LocationManager fallback |
+| **rtls-client** | `com.rtls.client` | rtls-core, rtls-offline-sync, rtls-websocket, rtls-location | `RTLSClient` orchestrator, `RTLSClientFactory` with Builder pattern — wires everything together |
 
 ---
 
-## API Surface
+## Dependency Graph
 
-### RTLSKmp (factory)
-
-```kotlin
-RTLSKmp.createLocationSyncClient(
-    context: Context,
-    baseUrl: String,
-    userId: String,
-    deviceId: String,
-    accessToken: String,
-    scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
-    batchingPolicy: BatchingPolicy = BatchingPolicy(),
-    retryPolicy: SyncRetryPolicy = SyncRetryPolicy.Default,
-    retentionPolicy: RetentionPolicy = RetentionPolicy.Recommended,
-    networkMonitor: NetworkMonitor? = AndroidNetworkMonitor(context)
-): LocationSyncClient
-
-RTLSKmp.createLocationFlow(
-    context: Context,
-    userId: String,
-    deviceId: String,
-    params: LocationRequestParams = LocationRequestParams()
-): Flow<LocationPoint>
+```
+                    ┌──────────────┐
+                    │  rtls-core   │
+                    │ (com.rtls.   │
+                    │   core)      │
+                    └──────┬───────┘
+                           │
+          ┌────────────────┼────────────────┐
+          │                │                │
+          ▼                ▼                ▼
+┌─────────────────┐ ┌────────────┐ ┌───────────────┐
+│ rtls-offline-   │ │  rtls-     │ │ rtls-location │
+│ sync            │ │  websocket │ │               │
+│ (com.rtls.sync) │ │ (com.rtls. │ │ (com.rtls.    │
+│                 │ │  websocket)│ │  location)    │
+└────────┬────────┘ └─────┬──────┘ └───────┬───────┘
+         │                │                │
+         └────────────────┼────────────────┘
+                          │
+                   ┌──────▼───────┐
+                   │ rtls-client  │
+                   │ (com.rtls.   │
+                   │  client)     │
+                   └──────────────┘
 ```
 
-### LocationSyncClient
-
-```kotlin
-fun startCollectingLocation(locationFlow: Flow<LocationPoint>)
-fun stopTracking()
-suspend fun stats(): LocationSyncClientStats    // pendingCount, oldestPendingRecordedAtMs
-suspend fun flushNow()
-val events: SharedFlow<LocationSyncClientEvent>
-```
-
-### Event Stream
-
-```kotlin
-sealed class LocationSyncClientEvent {
-    data class Recorded(val point: LocationPoint)
-    data class SyncEvent(val event: SyncEngineEvent)  // UploadSuccess | UploadFailed
-    data class Error(val message: String)
-    object TrackingStarted
-    object TrackingStopped
-}
-```
-
-### LocationRequestParams
-
-```kotlin
-data class LocationRequestParams(
-    val intervalMillis: Long = 10_000L,
-    val minUpdateIntervalMillis: Long = 10_000L,
-    val minUpdateDistanceMeters: Float = 10f
-)
-```
-
-`AndroidLocationProvider` uses `FusedLocationProviderClient` on API 29+ with automatic fallback to `LocationManager` on API ≤ 28. On startup, `getLastKnownLocation` is requested for an immediate first fix before subscribing to continuous updates.
+`rtls-client` is the only module that pulls in all four siblings. If you only need offline sync, depend on `rtls-offline-sync` alone — you get `rtls-core` transitively and nothing else.
 
 ---
 
-## Integration Guide
+## Quick Start
 
-### 1. Include as Gradle subproject
+### a) Offline sync only (no GPS, no WebSocket)
+
+**Gradle:** `implementation(project(":rtls-offline-sync"))`
+
+```kotlin
+val store = SqliteLocationStore(context)
+val api = OkHttpLocationSyncAPI(baseUrl, tokenProvider)
+val sync = OfflineSyncClient(store, api)
+sync.start()
+sync.insert(listOf(point1, point2))
+```
+
+### b) WebSocket only (real-time push/subscribe)
+
+**Gradle:** `implementation(project(":rtls-websocket"))`
+
+```kotlin
+val ws = RealTimeLocationClient(config, OkHttpRealTimeChannel())
+ws.connect()
+ws.pushLocation(point)
+ws.subscribe("user-id")
+ws.incomingLocations.collect { ... }
+```
+
+### c) GPS + offline sync + WebSocket (full stack)
+
+**Gradle:** `implementation(project(":rtls-client"))`
+
+```kotlin
+val client = RTLSClientFactory.Builder(context)
+    .baseUrl("https://api.example.com")
+    .userId("user123").deviceId("device456").accessToken("jwt")
+    .offlineSync()
+    .webSocket()
+    .location()
+    .build()
+val flow = builder.buildLocationFlow()
+client.startCollectingLocation(flow)
+```
+
+---
+
+## Module Details
+
+### rtls-core
+
+Zero external dependencies beyond `kotlinx-coroutines` and `kotlinx-serialization`. Defines every interface and data type that the other modules program against.
+
+**Key types:**
+
+- `LocationPoint`, `GeoCoordinate`, `LocationUploadBatch`, `LocationUploadResult`, `RejectedPoint`
+- `LocationStore` — insert, fetchPending, markSent, markFailed
+- `SentPointsPrunableLocationStore` — extends `LocationStore` with `pruneSentPoints`
+- `LocationSyncAPI` — `upload(batch) → Result`
+- `NetworkMonitor` — `isOnline()`, `onlineFlow`
+- `BatchingPolicy`, `SyncRetryPolicy`, `RetentionPolicy`
+
+### rtls-offline-sync
+
+Implements offline-first batched upload: GPS → SQLite → HTTP with exponential backoff, network gating, and configurable retention pruning.
+
+**Key types:**
+
+- `SqliteLocationStore` — raw Android SQLite; `INSERT OR REPLACE`, index on `sent_at IS NULL`
+- `OkHttpLocationSyncAPI` — `POST /v1/locations/batch`, Bearer token auth, `kotlinx.serialization` JSON
+- `SyncEngine` — mutex-serialized flush loop, timer job, network-online job, backoff, retention pruning
+- `OfflineSyncClient` — high-level facade: `start()`, `stop()`, `insert()`, `flushNow()`, `stats()`
+
+**Flush triggers:** timer tick (default 10s) · network comes online · new data inserted · manual `flushNow()`.
+
+**Backoff:** `min(maxDelayMs, baseDelayMs · 2^(attempt-1)) ± jitter`. Resets on success. Transport errors never mark points as failed — only explicit server rejections do.
+
+**Retention pruning:** deletes sent points older than `RetentionPolicy.sentPointsMaxAgeMs` (default 7 days), runs at most once per hour after a successful upload.
+
+### rtls-websocket
+
+Provides real-time bidirectional location streaming over WebSocket.
+
+**Key types:**
+
+- `RealTimeLocationClient` — connect, disconnect, pushLocation, subscribe/unsubscribe, `incomingLocations: Flow`
+- `OkHttpRealTimeChannel` — OkHttp WebSocket transport with auto-reconnect and exponential backoff
+- Protocol message types for push, subscribe, and server-sent location updates
+
+### rtls-location
+
+Android GPS collection with automatic API-level adaptation.
+
+**Key types:**
+
+- `AndroidLocationProvider` — `FusedLocationProviderClient` (API >= 29) with `LocationManager` fallback (API <= 28); `callbackFlow` emission; `getLastKnownLocation` for immediate first fix
+- `LocationRecordingDecider` — filters duplicate / low-accuracy points before storage
+- `AndroidNetworkMonitor` — `ConnectivityManager.registerDefaultNetworkCallback` → `callbackFlow` for reactive online/offline transitions
+
+### rtls-client
+
+Orchestrator that wires offline sync, WebSocket, and location collection into a single facade.
+
+**Key types:**
+
+- `RTLSClient` — `startCollectingLocation(Flow<LocationPoint>)`, `stopTracking()`, `stats()`, `flushNow()`, `events: SharedFlow`
+- `RTLSClientFactory` — Builder pattern: `.offlineSync()`, `.webSocket()`, `.location()`, `.build()`
+
+---
+
+## Gradle Dependency Instructions
+
+### As subproject (monorepo)
 
 **settings.gradle.kts** (host project):
 
 ```kotlin
-include(":rtls-kmp")
-project(":rtls-kmp").projectDir = file("../rtls-kmp")
+include(":rtls-core")
+include(":rtls-offline-sync")
+include(":rtls-websocket")
+include(":rtls-location")
+include(":rtls-client")
+
+project(":rtls-core").projectDir = file("../rtls-kmp/rtls-core")
+project(":rtls-offline-sync").projectDir = file("../rtls-kmp/rtls-offline-sync")
+project(":rtls-websocket").projectDir = file("../rtls-kmp/rtls-websocket")
+project(":rtls-location").projectDir = file("../rtls-kmp/rtls-location")
+project(":rtls-client").projectDir = file("../rtls-kmp/rtls-client")
 ```
 
-**app/build.gradle.kts**:
+**app/build.gradle.kts** — pick only the modules you need:
 
 ```kotlin
 dependencies {
-    implementation(project(":rtls-kmp"))
+    // Full stack:
+    implementation(project(":rtls-client"))
+
+    // Or pick individual modules:
+    // implementation(project(":rtls-offline-sync"))
+    // implementation(project(":rtls-websocket"))
+    // implementation(project(":rtls-location"))
 }
 ```
 
-### 2. Initialize and start tracking
+`rtls-core` is pulled in transitively by every module — no need to declare it explicitly.
 
-```kotlin
-val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+---
 
-val client = RTLSKmp.createLocationSyncClient(
-    context = applicationContext,
-    baseUrl = "https://api.example.com",
-    userId = "user-1",
-    deviceId = "device-1",
-    accessToken = "jwt-token",
-    scope = scope,
-    batchingPolicy = BatchingPolicy(maxBatchSize = 50, flushIntervalSeconds = 10),
-    retryPolicy = SyncRetryPolicy(baseDelayMs = 2000, maxDelayMs = 120_000),
-    retentionPolicy = RetentionPolicy.Recommended
-)
+## Migration Guide (from monolithic rtls-kmp)
 
-val locationFlow = RTLSKmp.createLocationFlow(
-    context = applicationContext,
-    userId = "user-1",
-    deviceId = "device-1",
-    params = LocationRequestParams(intervalMillis = 60_000L)
-)
+The old monolithic structure exposed everything through a single `implementation(project(":rtls-kmp"))` dependency and the `RTLSKmp` factory object.
 
-client.startCollectingLocation(locationFlow)
-```
+### What changed
 
-### 3. Observe events
+| Before (monolithic) | After (modular) |
+|---------------------|-----------------|
+| Single `:rtls-kmp` Gradle module | Five modules: `:rtls-core`, `:rtls-offline-sync`, `:rtls-websocket`, `:rtls-location`, `:rtls-client` |
+| `RTLSKmp.createLocationSyncClient()` | `RTLSClientFactory.Builder(context).…build()` |
+| `RTLSKmp.createLocationFlow()` | `builder.buildLocationFlow()` via `RTLSClientFactory` |
+| All classes in one package | Split across `com.rtls.core`, `com.rtls.sync`, `com.rtls.websocket`, `com.rtls.location`, `com.rtls.client` |
 
-```kotlin
-scope.launch {
-    client.events.collect { event ->
-        when (event) {
-            is LocationSyncClientEvent.Recorded -> { /* point persisted to SQLite */ }
-            is LocationSyncClientEvent.SyncEvent -> {
-                when (event.event) {
-                    is SyncEngineEvent.UploadSuccess -> { /* batch accepted */ }
-                    is SyncEngineEvent.UploadFailed -> { /* will retry with backoff */ }
-                }
-            }
-            is LocationSyncClientEvent.Error -> { /* location or insert error */ }
-            LocationSyncClientEvent.TrackingStarted -> {}
-            LocationSyncClientEvent.TrackingStopped -> {}
-        }
-    }
-}
-```
+### Steps
 
-### 4. Manual flush and stats
+1. **Update `settings.gradle.kts`** — replace `include(":rtls-kmp")` with the five module includes (see Gradle instructions above).
 
-```kotlin
-val stats = client.stats()   // pendingCount, oldestPendingRecordedAtMs
-client.flushNow()            // bypasses backoff, immediate upload attempt
-client.stopTracking()        // cancels location collection and sync engine
-```
+2. **Update `build.gradle.kts` dependency** — replace `implementation(project(":rtls-kmp"))` with either `implementation(project(":rtls-client"))` (full stack) or the specific modules you need.
 
-### Background execution
+3. **Fix imports** — update `import` statements to the new packages:
+   - `com.rtls.kmp.*` → `com.rtls.core.*` for models/interfaces/policies
+   - `com.rtls.kmp.*` → `com.rtls.sync.*` for `SqliteLocationStore`, `OkHttpLocationSyncAPI`, `SyncEngine`, `OfflineSyncClient`
+   - `com.rtls.kmp.*` → `com.rtls.websocket.*` for `RealTimeLocationClient`, `OkHttpRealTimeChannel`
+   - `com.rtls.kmp.*` → `com.rtls.location.*` for `AndroidLocationProvider`, `AndroidNetworkMonitor`
+   - `com.rtls.kmp.*` → `com.rtls.client.*` for `RTLSClient`, `RTLSClientFactory`
 
-For reliable background location delivery, the **host application** must start a foreground service before calling `startCollectingLocation`. The Flutter plugin (`rtls_flutter`) handles this internally with `RtlsLocationForegroundService`. A native Android app using `rtls-kmp` directly is responsible for its own foreground service lifecycle.
+4. **Replace factory calls** — migrate from `RTLSKmp.createLocationSyncClient(…)` to the Builder pattern:
 
-**Database path:** `context.filesDir/rtls_kmp/rtlsync.db`. Override by constructing `LocationSyncClient` directly with a custom `SqliteLocationStore(path)`.
+   ```kotlin
+   // Before
+   val client = RTLSKmp.createLocationSyncClient(context, baseUrl, userId, deviceId, token, scope)
+   val flow = RTLSKmp.createLocationFlow(context, userId, deviceId)
+
+   // After
+   val client = RTLSClientFactory.Builder(context)
+       .baseUrl(baseUrl).userId(userId).deviceId(deviceId).accessToken(token)
+       .offlineSync().webSocket().location()
+       .build()
+   val flow = builder.buildLocationFlow()
+   ```
+
+5. **Verify** — the `RTLSClient` API (`startCollectingLocation`, `stopTracking`, `stats`, `flushNow`, `events`) is unchanged.
 
 ---
 
@@ -311,8 +247,9 @@ For reliable background location delivery, the **host application** must start a
 | **Concurrency** | Kotlin Coroutines, `Flow`, `SharedFlow`, `Mutex` (non-blocking `tryLock` for flush serialization) |
 | **Persistence** | Raw Android SQLite — `INSERT OR REPLACE` for idempotent writes, `sent_at IS NULL` index scan for pending fetch |
 | **Network (HTTP)** | OkHttp 4.x, `POST /v1/locations/batch`, Bearer token auth |
+| **Network (WebSocket)** | OkHttp WebSocket, auto-reconnect with exponential backoff |
 | **Network (monitor)** | `ConnectivityManager.registerDefaultNetworkCallback` → `callbackFlow` for reactive online/offline transitions |
-| **Location** | `FusedLocationProviderClient` (Play Services, API ≥ 29) with `LocationManager` fallback (API ≤ 28), `callbackFlow` emission |
+| **Location** | `FusedLocationProviderClient` (Play Services, API >= 29) with `LocationManager` fallback (API <= 28), `callbackFlow` emission |
 
 ---
 

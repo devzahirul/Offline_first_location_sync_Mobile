@@ -1,5 +1,4 @@
-// Re-export core domain + sync types so consumers only need `import RTLSyncKit`.
 @_exported import RTLSCore
-@_exported import RTLSPlatformiOS
-@_exported import RTLSSync
-
+@_exported import RTLSLocation
+@_exported import RTLSOfflineSync
+@_exported import RTLSWebSocket

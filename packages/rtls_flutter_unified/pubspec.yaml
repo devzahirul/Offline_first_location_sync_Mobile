@@ -1,0 +1,19 @@
+name: rtls_flutter_unified
+description: Unified RTLS SDK combining offline sync, WebSocket, and background location.
+version: 1.0.0
+
+environment:
+  sdk: ">=3.0.0 <4.0.0"
+  flutter: ">=3.3.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  rtls_core:
+    path: ../rtls_core
+  rtls_offline_sync:
+    path: ../rtls_offline_sync
+  rtls_websocket:
+    path: ../rtls_websocket
+  rtls_location:
+    path: ../rtls_location

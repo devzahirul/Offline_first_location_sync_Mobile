@@ -8,7 +8,7 @@ Web dashboard for **Real-Time Location Sync**. When you run only this app (`npm 
 
 - **Stack:** React 19, TypeScript, Vite 7, [Leaflet](https://leafletjs.com/) via [react-leaflet](https://react-leaflet.js.org/). No backend of its own; consumes the RTLS Node.js API (REST + WebSocket).
 - **Role:** Operational view of tracked users/devices: enter backend base URL and user IDs, subscribe to the WebSocket, and display points on a map with connection status and basic controls.
-- **Data flow:** WebSocket `/v1/ws` for real-time `{ type: "location", point }` messages; periodic `GET /v1/locations/latest?userId=` for resilience against missed WS frames. Points are kept per user (capped in memory) and rendered as paths.
+- **Data flow:** WebSocket `/v1/ws` (v2 protocol with bidirectional push) for real-time `location.update` messages; periodic `GET /v1/locations/latest?userId=` for resilience against missed WS frames; `GET /v1/locations/pull` for historical data retrieval. Points are kept per user (capped in memory) and rendered as paths.
 
 ---
 
@@ -71,7 +71,16 @@ npm run dev
 - **Vite:** Fast HMR and build; ESM-native.
 - **React 19:** Current React with hooks for state and effects.
 - **Leaflet + react-leaflet:** Mature, mobile-friendly maps with minimal setup; no API key required for default tiles.
-- **Single WebSocket:** One connection; multiple `subscribe` messages for multiple users to reduce resource use.
+- **Single WebSocket:** One connection; multiple `subscribe` messages for multiple users to reduce resource use. The backend now supports the v2 WebSocket protocol with enhanced `location.update` messages containing richer metadata.
+- **Historical pull:** The new `GET /v1/locations/pull` endpoint allows fetching historical location data for replay or gap-filling when the dashboard reconnects after a disconnection.
+
+---
+
+## Modular Architecture
+
+The RTLS SDK has been restructured into independent packages across all platforms (iOS, Android/KMP, Flutter). The backend has been enhanced with the WebSocket v2 protocol and a new `GET /v1/locations/pull` endpoint. The dashboard consumes these backend APIs and benefits from the richer v2 message format without requiring changes to its own architecture.
+
+For full details, see [MODULAR_ARCHITECTURE.md](../MODULAR_ARCHITECTURE.md).
 
 ---
 

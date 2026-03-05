@@ -1,5 +1,7 @@
 # RTLS Flutter Example
 
+> **Legacy notice:** This example uses the **monolithic `rtls_flutter` plugin**, which is now in maintenance mode. New projects should use the modular packages under [`packages/`](../../packages/) — see the [main README](../README.md) for the migration guide and quick-start examples.
+
 Production-grade **Flutter demo app** for the [rtls_flutter](../README.md) plugin. Runs identically on Android and iOS from a single Dart codebase — designed as a feature-complete reference implementation and portfolio piece demonstrating offline-first location sync with real-time UI feedback.
 
 ---
@@ -39,6 +41,8 @@ Production-grade **Flutter demo app** for the [rtls_flutter](../README.md) plugi
 **60-second no-location timeout**: if no `recorded` event arrives within 60 seconds of starting, tracking stops automatically and an error is surfaced — matching the native iOS app's behavior exactly.
 
 **WebSocket subscriber**: connects to `/v1/ws` to display another user's live location updates in real time, independent of the local tracking session.
+
+**Android: app in background vs app closed** — When the app is **backgrounded**, the foreground service keeps location and sync running. When the app is **closed** (swiped away or process killed), the plugin still receives location via a system PendingIntent and stores points locally; they are **uploaded when you open the app again** (lifecycle flush). Force‑stopping the app in Settings disables this until the next launch.
 
 ---
 

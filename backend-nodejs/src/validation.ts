@@ -24,3 +24,19 @@ export const WsSubscribeSchema = z.object({
   userId: z.string().min(1)
 });
 
+export const WsClientMessageSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("auth"), token: z.string().min(1) }),
+  z.object({ type: z.literal("location.push"), reqId: z.string().min(1), point: LocationPointSchema }),
+  z.object({ type: z.literal("location.batch"), reqId: z.string().min(1), points: z.array(LocationPointSchema).min(1) }),
+  z.object({ type: z.literal("subscribe"), userId: z.string().min(1) }),
+  z.object({ type: z.literal("unsubscribe"), userId: z.string().min(1) }),
+  z.object({ type: z.literal("sync.pull"), reqId: z.string().min(1), cursor: z.string().optional(), limit: z.number().int().min(1).max(500).optional() }),
+  z.object({ type: z.literal("ping") }),
+]);
+
+export const PullQuerySchema = z.object({
+  userId: z.string().min(1),
+  cursor: z.string().optional(),
+  limit: z.coerce.number().int().min(1).max(500).default(100),
+});
+

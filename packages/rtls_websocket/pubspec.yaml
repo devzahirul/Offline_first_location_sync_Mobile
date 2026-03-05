@@ -1,0 +1,11 @@
+name: rtls_websocket
+description: Real-time bidirectional WebSocket client for RTLS location streaming.
+version: 1.0.0
+
+environment:
+  sdk: ">=3.0.0 <4.0.0"
+
+dependencies:
+  rtls_core:
+    path: ../rtls_core
+  web_socket_channel: ^3.0.0

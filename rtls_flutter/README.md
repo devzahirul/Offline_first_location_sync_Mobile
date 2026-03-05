@@ -1,173 +1,149 @@
-# rtls_flutter
+# rtls_flutter — Modular Flutter Location Sync SDK
 
-Cross-platform Flutter plugin delivering **offline-first, battery-aware location sync** over a single Dart API. Android is backed by a shared Kotlin Multiplatform sync engine ([rtls-kmp](../rtls-kmp/README.md)); iOS delegates to the native Swift [RTLSyncKit](https://github.com/devzahirul/Offline_first_location_sync_iOS) package. Both converge on the same backend contract — `POST /v1/locations/batch`, `GET /v1/locations/latest`, WebSocket `/v1/ws` — so the host app never thinks about platform differences.
+The RTLS Flutter SDK has been restructured from a single monolithic plugin into **five independent packages** under [`packages/`](../packages/). Each package handles one concern, so you only pull in what you need — smaller dependency footprint, faster builds, and cleaner architecture.
 
----
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────┐
-│                  Dart (Host App)                 │
-│  RTLSync.configure ─ startTracking ─ stopTracking│
-│  getStats ─ flushNow ─ requestAlwaysAuthorization│
-│  RTLSync.events (Stream<Map>)                    │
-├────────────┬────────────────────────┬────────────┤
-│MethodChannel│       EventChannel    │            │
-├────────────┴────────────────────────┴────────────┤
-│  Android (Kotlin)            │  iOS (Swift)      │
-│  → rtls-kmp SyncEngine       │  → RTLSyncKit     │
-│  → ForegroundService         │  → CLLocationMgr  │
-│    (FOREGROUND_SERVICE_TYPE  │  → CoreLocation    │
-│     _LOCATION)               │    significant /   │
-│  → ActivityCompat perms      │    standard visits │
-└──────────────────────────────┴───────────────────┘
-```
-
-**MethodChannel** handles one-shot calls (`configure`, `startTracking`, `stopTracking`, `getStats`, `flushNow`, `requestAlwaysAuthorization`). **EventChannel** delivers a continuous event stream back to Dart. The plugin implements `ActivityAware` on Android so permission requests route through `ActivityCompat` with the correct `Activity` reference.
+> **Legacy note:** The original `rtls_flutter/` plugin still works and is maintained for backward compatibility, but new projects should adopt the modular packages. See [Migration Guide](#migration-guide) below.
 
 ---
 
-## Dart API
+## Package Overview
+
+| Package | Type | Purpose | Depends on |
+|---------|------|---------|------------|
+| **rtls_core** | Pure Dart | Shared models: `RTLSLocationPoint`, `RTLSEvent` sealed hierarchy, `RTLSBatchingPolicy`, `RTLSTrackingPolicy` | — |
+| **rtls_offline_sync** | Flutter plugin | Offline-first batch sync engine: configure, start, stop, insert, flushNow, pullNow, getStats. Bridges to native via Method/Event channels | rtls_core |
+| **rtls_websocket** | Pure Dart | Real-time client over WebSocket: connect, disconnect, pushLocation, pushBatch, subscribe, unsubscribe. Auto-reconnect & ping. `RTLSWebSocketEvent` sealed hierarchy | rtls_core |
+| **rtls_location** | Flutter plugin | Location tracking: configure, start, stop, `locations` stream. Bridges to native via Method/Event channels | rtls_core |
+| **rtls_flutter_unified** | Dart | Orchestrator that combines all capabilities through optional dependency injection | rtls_core, rtls_offline_sync, rtls_websocket, rtls_location |
+
+### Android Native Bridging
+
+Each Flutter plugin delegates to its corresponding KMP module:
+
+| Flutter plugin | KMP module |
+|----------------|------------|
+| rtls_offline_sync | `rtls-offline-sync` |
+| rtls_location | `rtls-location` |
+
+---
+
+## Combination Matrix
+
+Pick the packages that match your use case:
+
+| Scenario | Packages needed |
+|----------|-----------------|
+| Offline batch sync only | `rtls_core` + `rtls_offline_sync` |
+| Real-time WebSocket only | `rtls_core` + `rtls_websocket` |
+| Background location tracking only | `rtls_core` + `rtls_location` |
+| Location tracking + offline sync | `rtls_core` + `rtls_location` + `rtls_offline_sync` |
+| Location tracking + real-time push | `rtls_core` + `rtls_location` + `rtls_websocket` |
+| Full stack (all capabilities) | `rtls_core` + all four + `rtls_flutter_unified` |
+
+---
+
+## Quick Start
+
+### Offline Sync Only
 
 ```dart
-import 'package:rtls_flutter/rtls_flutter.dart';
+import 'package:rtls_offline_sync/rtls_offline_sync.dart';
+
+final sync = RTLSOfflineSync();
+await sync.configure(baseUrl: '...', userId: '...', deviceId: '...');
+await sync.start();
+await sync.insert([point1, point2]);
 ```
 
-### RTLSyncConfig
-
-| Parameter | Type | Purpose |
-|-----------|------|---------|
-| `baseUrl` | `String` | Backend root (no trailing slash) |
-| `userId` | `String` | Logical user identifier |
-| `deviceId` | `String` | Per-device identifier |
-| `accessToken` | `String` | JWT / bearer token for `Authorization` header |
-| `locationIntervalSeconds` | `int?` | Time-based capture interval (Android) |
-| `locationDistanceMeters` | `double?` | Distance-based capture threshold (Android) |
-| `useSignificantLocationOnly` | `bool?` | ~500 m / battery-optimized mode |
-| `batchMaxSize` | `int?` | Max points per upload batch |
-| `flushIntervalSeconds` | `int?` | Automatic flush cadence |
-| `maxBatchAgeSeconds` | `int?` | Force-flush threshold for stale batches |
-
-### Core Methods
+### WebSocket Only
 
 ```dart
-await RTLSync.configure(RTLSyncConfig(
-  baseUrl: 'https://api.example.com',
-  userId: 'user-123',
-  deviceId: 'device-456',
-  accessToken: 'jwt-token',
-  locationIntervalSeconds: 360,
-  batchMaxSize: 50,
-  flushIntervalSeconds: 30,
-  maxBatchAgeSeconds: 120,
-));
+import 'package:rtls_websocket/rtls_websocket.dart';
 
-await RTLSync.requestAlwaysAuthorization();
-await RTLSync.startTracking();
-await RTLSync.stopTracking();
-
-final stats = await RTLSync.getStats();
-// stats.pendingCount, stats.oldestPendingRecordedAtMs
-
-await RTLSync.flushNow();
+final ws = RTLSRealTimeClient(config: RTLSWebSocketConfig(baseUrl: '...'));
+await ws.connect();
+ws.pushLocation(point);
+ws.subscribe('other-user');
+ws.incomingLocations.listen((p) => print(p));
 ```
 
-### Event Stream
+### Full Combo (Unified Client)
 
 ```dart
-RTLSync.events.listen((Map<dynamic, dynamic> event) {
-  switch (event['type']) {
-    case 'recorded':
-      // Full point: lat, lng, accuracy, altitude, speed, course, recordedAt
-    case 'syncEvent':
-      // uploadSucceeded → accepted/rejected counts
-      // uploadFailed   → error message
-    case 'error':
-      // Runtime error description
-    case 'trackingStarted':
-    case 'trackingStopped':
-  }
-});
+import 'package:rtls_flutter_unified/rtls_flutter_unified.dart';
+
+final client = RTLSUnifiedClient(
+  offlineSync: RTLSOfflineSync(),
+  webSocket: RTLSRealTimeClient(config: wsConfig),
+  locationTracker: RTLSLocationTracker(),
+);
+await client.configure(...);
+await client.start();
 ```
 
-Events mirror RTLSyncKit semantics: `recorded` carries the full location point (horizontal accuracy, altitude, speed, course); `syncEvent` distinguishes `uploadSucceeded` (with `accepted` / `rejected` counts) from `uploadFailed` (with a human-readable `message`).
+The `RTLSUnifiedClient` accepts each capability as an optional parameter — pass only what you need and the orchestrator adapts accordingly.
 
 ---
 
-## Android Integration
+## Migration Guide
 
-### 1. Include rtls-kmp in the host app's Gradle build
+Migrating from the legacy `rtls_flutter` monolithic plugin to the new modular packages:
 
-The plugin's Android layer resolves `rtls-kmp` as a project dependency. The host app must surface it.
+### 1. Update dependencies
 
-**settings.gradle.kts**
+**Before (monolithic):**
 
-```kotlin
-include(":rtls_kmp")
-project(":rtls_kmp").projectDir = file("../../rtls-kmp") // adjust relative path
+```yaml
+dependencies:
+  rtls_flutter:
+    path: ../rtls_flutter
 ```
 
-### 2. Manifest permissions
+**After (modular — pick what you need):**
 
-The plugin's own `AndroidManifest.xml` declares:
-
-```xml
-<uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
-<uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
-<uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
-<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-<uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+```yaml
+dependencies:
+  rtls_core:
+    path: ../packages/rtls_core
+  rtls_offline_sync:
+    path: ../packages/rtls_offline_sync
+  rtls_location:
+    path: ../packages/rtls_location
+  rtls_websocket:
+    path: ../packages/rtls_websocket
+  rtls_flutter_unified:
+    path: ../packages/rtls_flutter_unified
 ```
 
-Runtime permission requests are handled by the plugin via `ActivityCompat`. The plugin is `ActivityAware`, binding to the host `Activity` lifecycle for correct permission callback routing.
+### 2. Replace imports
 
-### 3. Foreground service
+| Before | After |
+|--------|-------|
+| `import 'package:rtls_flutter/rtls_flutter.dart';` | `import 'package:rtls_offline_sync/rtls_offline_sync.dart';` |
+| | `import 'package:rtls_websocket/rtls_websocket.dart';` |
+| | `import 'package:rtls_location/rtls_location.dart';` |
+| | `import 'package:rtls_flutter_unified/rtls_flutter_unified.dart';` |
 
-Tracking launches an Android foreground service typed as `FOREGROUND_SERVICE_TYPE_LOCATION`, ensuring location updates continue when the app is backgrounded. `LocationRequestParams` (interval, distance, significant-only) are derived from the `RTLSyncConfig` passed at configure time.
+### 3. Replace API calls
+
+| Legacy API | New API |
+|------------|---------|
+| `RTLSync.configure(config)` | `RTLSOfflineSync().configure(...)` or `RTLSUnifiedClient(...).configure(...)` |
+| `RTLSync.startTracking()` | `RTLSLocationTracker().start()` / `RTLSOfflineSync().start()` |
+| `RTLSync.stopTracking()` | `RTLSLocationTracker().stop()` / `RTLSOfflineSync().stop()` |
+| `RTLSync.flushNow()` | `RTLSOfflineSync().flushNow()` |
+| `RTLSync.getStats()` | `RTLSOfflineSync().getStats()` |
+| `RTLSync.events` (combined stream) | Individual streams per package, or `RTLSUnifiedClient` |
+
+### 4. Android: update Gradle includes
+
+Replace the single `:rtls_kmp` include with the specific KMP modules your chosen packages require (`rtls-offline-sync`, `rtls-location`).
 
 ---
 
-## iOS Integration
+## Legacy Plugin
 
-### 1. Link RTLSyncKit
-
-1. Open `ios/Runner.xcworkspace` in Xcode.
-2. **File → Add Package Dependencies…** → add the repo root (or Git URL) containing `Package.swift`.
-3. Link the **RTLSyncKit** library to the **Runner** target under General → Frameworks, Libraries, and Embedded Content.
-
-### 2. Info.plist usage strings
-
-```xml
-<key>NSLocationWhenInUseUsageDescription</key>
-<string>Records your location for real-time sync.</string>
-<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
-<string>Continues location recording in the background.</string>
-```
-
-### 3. Build
-
-```bash
-flutter run          # or flutter build ios
-```
-
----
-
-## Platform Summary
-
-| | Android | iOS |
-|---|---------|-----|
-| **Engine** | rtls-kmp (Kotlin Multiplatform) | RTLSyncKit (Swift) |
-| **Background** | Foreground service (`FOREGROUND_SERVICE_TYPE_LOCATION`) | CLLocationManager always-authorization |
-| **Host Setup** | Include `:rtls_kmp` in `settings.gradle`; permissions in manifest | Link RTLSyncKit Swift package in Xcode; Info.plist strings |
-| **Permission API** | `ActivityCompat` via `ActivityAware` plugin | `requestAlwaysAuthorization()` bridged through MethodChannel |
-
----
-
-## Example App
-
-See [example/README.md](example/README.md) — a production-quality Material 3 demo with configurable tracking policies, batching controls, WebSocket subscriber, and full event log.
+The `rtls_flutter/` directory contains the original monolithic plugin. It is still functional but will not receive new features. All active development happens in the modular packages under `packages/`.
 
 ---
 

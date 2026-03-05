@@ -1,0 +1,6 @@
+name: rtls_core
+description: Core types, models, and interfaces for the RTLS SDK. No platform dependencies.
+version: 1.0.0
+
+environment:
+  sdk: ">=3.0.0 <4.0.0"

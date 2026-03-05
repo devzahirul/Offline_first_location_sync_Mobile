@@ -112,10 +112,10 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     if (!_configured) return;
     if (state == AppLifecycleState.resumed) {
       _log('Foreground: flushing pending points');
-      RTLSync.flushNow().then((_) => _loadStats()).catchError((_) {});
+      RTLSync.flushNow().then((_) => _loadStats()).catchError((_) {}); // best-effort; ignore errors
     } else if (state == AppLifecycleState.paused) {
       _log('Background: flushing pending points');
-      RTLSync.flushNow().catchError((_) {});
+      RTLSync.flushNow().catchError((_) {}); // best-effort; ignore errors
     }
   }
 
@@ -148,7 +148,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                 }
               }
             }
-          } catch (_) {}
+          } catch (_) {} // ignore malformed WS message
         },
         onError: (e) {
           if (mounted) {
@@ -301,7 +301,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
             ? _formatMs(stats.oldestPendingRecordedAtMs!)
             : null;
       });
-    } catch (_) {}
+    } catch (_) {} // not configured or plugin error; keep previous stats
   }
 
   Future<void> _configure() async {

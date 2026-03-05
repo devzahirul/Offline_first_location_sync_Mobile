@@ -2,14 +2,16 @@
 
 Cross-platform **React Native** reference app demonstrating the [rtls-react-native](../rtls-react-native/README.md) native module on **both iOS and Android**. Covers the full lifecycle: configure backend credentials, request location authorization, start/stop tracking, flush pending data, and observe live events — all from a single JavaScript codebase.
 
+> The underlying `rtls-react-native` module now uses **modular native engines** — individual KMP Gradle modules on Android and independent SwiftPM targets on iOS. The JS API remains unchanged. See [MODULAR_ARCHITECTURE.md](../MODULAR_ARCHITECTURE.md) for details.
+
 ---
 
 ## Platform Support
 
 | Platform | Engine | Setup |
 |----------|--------|-------|
-| **iOS** | RTLSyncKit via Swift package | Link Swift package in Xcode; `pod install` |
-| **Android** | rtls-kmp via Gradle subproject | Include `:rtls_kmp` in `settings.gradle`; grant location permissions |
+| **iOS** | RTLSyncKit via Swift package (modular targets: RTLSCore, RTLSLocation, RTLSOfflineSync, RTLSWebSocket) | Link Swift package in Xcode; `pod install` |
+| **Android** | rtls-kmp modular Gradle modules (rtls-core, rtls-offline-sync, rtls-location) | Include modules in `settings.gradle`; grant location permissions |
 
 The same JS API (`RTLSync.configure`, `startTracking`, `stopTracking`, `getStats`, `flushNow`, `requestAlwaysAuthorization`, event listeners) works identically on both platforms.
 
@@ -56,11 +58,17 @@ ruby scripts/add_rtls_swift_package.rb
 
 ### 3. Android
 
-The example's `android/settings.gradle` already includes the rtls-kmp subproject:
+The example's `android/settings.gradle` already includes the modular KMP subprojects:
 
 ```groovy
-include ':rtls_kmp'
-project(':rtls_kmp').projectDir = file('../../rtls-kmp')
+include ':rtls-core'
+project(':rtls-core').projectDir = file('../../rtls-kmp/rtls-core')
+
+include ':rtls-offline-sync'
+project(':rtls-offline-sync').projectDir = file('../../rtls-kmp/rtls-offline-sync')
+
+include ':rtls-location'
+project(':rtls-location').projectDir = file('../../rtls-kmp/rtls-location')
 ```
 
 Location permissions (`ACCESS_FINE_LOCATION`, `ACCESS_COARSE_LOCATION`, `ACCESS_BACKGROUND_LOCATION`) are declared in the manifest. Grant them at runtime when prompted.
@@ -109,7 +117,7 @@ Single-screen layout exposing the full module API:
 | `package.json` | App dependencies; `rtls-react-native` via `file:../rtls-react-native` |
 | `App.tsx` | UI: config fields, action buttons, pending count, event display |
 | `ios/` | iOS project; Podfile includes rtls-react-native; RTLSyncKit linked via Swift package |
-| `android/` | Android project; `settings.gradle` includes `:rtls_kmp` subproject |
+| `android/` | Android project; `settings.gradle` includes modular KMP subprojects (`:rtls-core`, `:rtls-offline-sync`, `:rtls-location`) |
 | `scripts/add_rtls_swift_package.rb` | Automates RTLSyncKit Swift package reference in Pods project |
 
 ---

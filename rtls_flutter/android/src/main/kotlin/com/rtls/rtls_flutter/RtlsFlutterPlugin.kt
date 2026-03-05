@@ -3,11 +3,19 @@ package com.rtls.rtls_flutter
 import android.Manifest
 import android.app.Activity
 import android.app.Application
+import android.app.PendingIntent
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import androidx.core.content.ContextCompat
+import com.google.android.gms.location.FusedLocationProviderClient
+import com.google.android.gms.location.LocationRequest
+import com.google.android.gms.location.LocationServices
+import com.google.android.gms.location.Priority
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.embedding.engine.plugins.activity.ActivityAware
 import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding
@@ -43,6 +51,8 @@ class RtlsFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, EventC
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var eventCollectionJob: Job? = null
     private var lifecycleCallbacks: Application.ActivityLifecycleCallbacks? = null
+    private var pendingLocationIntent: PendingIntent? = null
+    private var locationReceivedReceiver: BroadcastReceiver? = null
 
     companion object {
         private const val REQUEST_CODE_LOCATION = 0x2a02
@@ -88,6 +98,8 @@ class RtlsFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, EventC
         eventChannel?.setStreamHandler(null)
         eventChannel = null
         unregisterLifecycleCallbacks()
+        unregisterLocationReceivedReceiver()
+        removePendingIntentUpdates()
         client?.stopTracking()
         client = null
         context?.let { RtlsLocationForegroundService.stop(it) }
@@ -255,12 +267,17 @@ class RtlsFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, EventC
                 }
                 val userId = lastUserId ?: return result.error("INVALID", "Configure first", null)
                 val deviceId = lastDeviceId ?: return result.error("INVALID", "Configure first", null)
+                savePendingIntentConfig(ctx, userId, deviceId)
+                registerPendingIntentLocationUpdates(ctx, userId, deviceId)
+                registerLocationReceivedReceiver()
                 RtlsLocationForegroundService.start(ctx)
                 val flow = RTLSKmp.createLocationFlow(ctx, userId, deviceId, locationRequestParams)
                 c.startCollectingLocation(flow)
                 result.success(null)
             }
             "stopTracking" -> {
+                removePendingIntentUpdates()
+                unregisterLocationReceivedReceiver()
                 context?.let { RtlsLocationForegroundService.stop(it) }
                 client?.stopTracking()
                 result.success(null)
@@ -297,6 +314,102 @@ class RtlsFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, EventC
             }
             else -> result.notImplemented()
         }
+    }
+
+    private fun savePendingIntentConfig(context: Context, userId: String, deviceId: String) {
+        RtlsLocationBroadcastReceiver.getPrefs(context).edit()
+            .putString(RtlsLocationBroadcastReceiver.KEY_USER_ID, userId)
+            .putString(RtlsLocationBroadcastReceiver.KEY_DEVICE_ID, deviceId)
+            .putFloat(RtlsLocationBroadcastReceiver.KEY_MAX_ACCURACY_METERS, locationRequestParams.maxAcceptableAccuracyMeters)
+            .apply()
+    }
+
+    private fun buildLocationRequest(): LocationRequest {
+        val p = locationRequestParams
+        val priority = if (p.useBalancedPowerAccuracy)
+            Priority.PRIORITY_BALANCED_POWER_ACCURACY else Priority.PRIORITY_HIGH_ACCURACY
+        return LocationRequest.Builder(priority, p.intervalMillis)
+            .setMinUpdateIntervalMillis(p.minUpdateIntervalMillis)
+            .setMinUpdateDistanceMeters(p.minUpdateDistanceMeters)
+            .apply {
+                if (p.maxUpdateDelayMillis > 0) {
+                    setMaxUpdateDelayMillis(p.maxUpdateDelayMillis)
+                }
+            }
+            .build()
+    }
+
+    private fun registerPendingIntentLocationUpdates(context: Context, userId: String, deviceId: String) {
+        removePendingIntentUpdates()
+        val intent = Intent(context, RtlsLocationBroadcastReceiver::class.java).apply {
+            action = RtlsLocationBroadcastReceiver.ACTION_LOCATION_UPDATE
+        }
+        val pending = PendingIntent.getBroadcast(
+            context,
+            0,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        try {
+            val client: FusedLocationProviderClient = LocationServices.getFusedLocationProviderClient(context)
+            client.requestLocationUpdates(buildLocationRequest(), pending)
+            pendingLocationIntent = pending
+        } catch (_: SecurityException) { /* permission already checked in startTracking */ }
+    }
+
+    private fun removePendingIntentUpdates() {
+        val ctx = context ?: return
+        val pending = pendingLocationIntent ?: return
+        try {
+            LocationServices.getFusedLocationProviderClient(ctx).removeLocationUpdates(pending)
+        } catch (_: Exception) { }
+        pendingLocationIntent = null
+    }
+
+    private fun registerLocationReceivedReceiver() {
+        val ctx = context ?: return
+        unregisterLocationReceivedReceiver()
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) {
+                if (intent.action != RtlsLocationBroadcastReceiver.ACTION_LOCATION_RECEIVED) return
+                scope.launch { client?.flushNow() }
+                val id = intent.getStringExtra(RtlsLocationBroadcastReceiver.EXTRA_LAST_POINT_ID) ?: return
+                val recordedAtMs = intent.getLongExtra(RtlsLocationBroadcastReceiver.EXTRA_LAST_RECORDED_AT, 0L)
+                val lat = intent.getDoubleExtra(RtlsLocationBroadcastReceiver.EXTRA_LAST_LAT, 0.0)
+                val lng = intent.getDoubleExtra(RtlsLocationBroadcastReceiver.EXTRA_LAST_LNG, 0.0)
+                val acc = intent.getFloatExtra(RtlsLocationBroadcastReceiver.EXTRA_LAST_ACCURACY, -1f)
+                val pointMap = mapOf(
+                    "id" to id,
+                    "userId" to (lastUserId ?: ""),
+                    "deviceId" to (lastDeviceId ?: ""),
+                    "recordedAtMs" to recordedAtMs,
+                    "lat" to lat,
+                    "lng" to lng,
+                    "horizontalAccuracy" to if (acc >= 0) acc.toDouble() else null,
+                    "verticalAccuracy" to null,
+                    "altitude" to null,
+                    "speed" to null,
+                    "course" to null
+                )
+                scope.launch {
+                    withContext(Dispatchers.Main) {
+                        eventSink?.success(mapOf("type" to "recorded", "point" to pointMap))
+                    }
+                }
+            }
+        }
+        locationReceivedReceiver = receiver
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            ctx.registerReceiver(receiver, IntentFilter(RtlsLocationBroadcastReceiver.ACTION_LOCATION_RECEIVED), Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            ctx.registerReceiver(receiver, IntentFilter(RtlsLocationBroadcastReceiver.ACTION_LOCATION_RECEIVED))
+        }
+    }
+
+    private fun unregisterLocationReceivedReceiver() {
+        val ctx = context ?: return
+        locationReceivedReceiver?.let { ctx.unregisterReceiver(it) }
+        locationReceivedReceiver = null
     }
 
     private fun startEventCollectionIfReady() {

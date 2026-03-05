@@ -1,9 +1,8 @@
 import CoreLocation
 import Foundation
 import RTLSCore
-import RTLSData
-import RTLSPlatformiOS
-import RTLSSync
+import RTLSLocation
+import RTLSOfflineSync
 
 public enum LocationSyncClientEvent: Sendable, Equatable {
     case authorizationChanged(LocationAuthorization)

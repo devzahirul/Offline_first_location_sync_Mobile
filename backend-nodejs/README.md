@@ -7,7 +7,7 @@ REST and WebSocket API for **Real-Time Location Sync**. When you run only this s
 ## Overview
 
 - **Stack:** Node.js, Express, TypeScript. Optional PostgreSQL for persistence; in-memory fallback when `DATABASE_URL` is unset. Authentication via JWT when `JWT_SECRET` is set.
-- **API surface:** Three entry points — `POST /v1/locations/batch`, `GET /v1/locations/latest`, WebSocket `/v1/ws`. CORS enabled for dashboard and mobile clients.
+- **API surface:** Four entry points — `POST /v1/locations/batch`, `GET /v1/locations/latest`, `GET /v1/locations/pull`, WebSocket `/v1/ws` (v2 protocol). CORS enabled for dashboard and mobile clients.
 - **Validation:** Request bodies and WebSocket messages validated with [Zod](https://github.com/colinhacks/zod); invalid payloads return 400 with error details.
 
 ---
@@ -85,14 +85,114 @@ Return the most recently stored point for a user. Requires `Authorization: Beare
 
 ---
 
-### WebSocket: `/v1/ws`
+#### `GET /v1/locations/pull?userId=&cursor=&limit=`
 
-- **Protocol:** JSON messages over raw WebSocket (no STOMP/SockJS).
-- **Authentication:** Optional; if `JWT_SECRET` is set, clients may need to send a first message carrying token (implementation may vary; see server code for current behavior).
-- **Client → Server:** `{ "type": "subscribe", "userId": "<userId>" }` — subscribe to location updates for that user.
-- **Server → Client:** `{ "type": "location", "point": LocationPoint }` — broadcast when a new point for that user is received via `POST /v1/locations/batch`.
+Cursor-based pagination for bidirectional sync. Clients call this to pull points they may have missed (e.g. after being offline). Requires `Authorization: Bearer <token>` when `JWT_SECRET` is set.
 
-Used by the web dashboard for live map updates.
+**Query:**
+
+| Parameter | Required | Default | Description |
+|-----------|----------|---------|-------------|
+| `userId` | Yes | -- | User identifier |
+| `cursor` | No | -- | ISO 8601 timestamp; returns points recorded after this time |
+| `limit` | No | `100` | Max points per page (1-500) |
+
+**Response:** `200 OK`
+
+```ts
+{
+  points: LocationPoint[];  // ordered by recorded_at ASC
+  nextCursor?: string;      // ISO 8601; present when more pages exist
+  serverTime: number;       // server timestamp (ms)
+}
+```
+
+When `nextCursor` is present, the client should make another request with `cursor=<nextCursor>` to fetch the next page. When absent, all available points have been returned.
+
+**Errors:** `400` (invalid parameters), `401` (auth).
+
+---
+
+### WebSocket v2 Protocol: `/v1/ws`
+
+JSON messages over raw WebSocket (no STOMP/SockJS). Supports authentication, bidirectional location push, subscriptions, sync pull, and heartbeat. Backward-compatible with v1 subscribe messages.
+
+#### Connection Flow
+
+1. Connect to `ws://<host>/v1/ws`
+2. If `JWT_SECRET` is set, send `auth` message before any other operation
+3. Server responds with `auth.ok` on success or closes the connection on failure
+
+#### Client -> Server Messages
+
+**`auth`** -- authenticate the connection:
+
+```json
+{ "type": "auth", "token": "<jwt>" }
+```
+
+**`location.push`** -- push a single location point:
+
+```json
+{
+  "type": "location.push",
+  "reqId": "uuid",
+  "point": {
+    "id": "uuid", "userId": "user-1", "deviceId": "device-1",
+    "recordedAt": 1709500000000, "lat": 37.7749, "lng": -122.4194
+  }
+}
+```
+
+**`location.batch`** -- push multiple points:
+
+```json
+{
+  "type": "location.batch",
+  "reqId": "uuid",
+  "points": [ { "id": "...", "userId": "...", ... } ]
+}
+```
+
+**`subscribe`** -- subscribe to live updates for a user:
+
+```json
+{ "type": "subscribe", "userId": "user-1" }
+```
+
+**`unsubscribe`** -- unsubscribe from a user:
+
+```json
+{ "type": "unsubscribe", "userId": "user-1" }
+```
+
+**`sync.pull`** -- pull missed points (cursor-based):
+
+```json
+{ "type": "sync.pull", "reqId": "uuid", "cursor": "2024-01-01T00:00:00.000Z", "limit": 100 }
+```
+
+**`ping`** -- heartbeat:
+
+```json
+{ "type": "ping" }
+```
+
+#### Server -> Client Messages
+
+| Type | Key Fields | Description |
+|------|------------|-------------|
+| `auth.ok` | -- | Authentication succeeded |
+| `location.ack` | `reqId`, `pointId`, `status` | Acknowledgment for `location.push` (`status`: `"accepted"` or `"rejected"`) |
+| `location.batch_ack` | `reqId`, `acceptedIds[]`, `rejected[]` | Acknowledgment for `location.batch` |
+| `location.update` | `point` | Live location broadcast to subscribers |
+| `sync.result` | `reqId`, `points[]`, `cursor?`, `serverTime` | Response to `sync.pull`; `cursor` present when more pages exist |
+| `subscribed` | `userId` | Subscription confirmed |
+| `unsubscribed` | `userId` | Unsubscription confirmed |
+| `pong` | -- | Heartbeat response |
+| `error` | `message` | Error description |
+
+Used by mobile clients for real-time push and by the web dashboard for live map updates.
 
 ---
 
@@ -146,7 +246,7 @@ npm run dev            # tsx watch; use npm run build && npm start for productio
 | `src/auth.ts` | JWT extraction and verification (`requireAuth`) |
 | `src/validation.ts` | Zod schemas for batch and WebSocket |
 | `src/types.ts` | TypeScript types for points, batch, result, WS envelopes |
-| `src/db.ts` | PostgreSQL client, table init, insert, latest-by-user |
+| `src/db.ts` | PostgreSQL client, table init, insert, latest-by-user, cursor-based pull |
 | `src/wsHub.ts` | WebSocket hub (subscribe by userId, broadcast) |
 | `src/env.ts` | Minimal `.env` loader (no dotenv dependency) |
 | `sql/001_init.sql` | Table DDL for location points |
